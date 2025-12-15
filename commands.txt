@@ -1,0 +1,19 @@
+cargo run --release -- --partition-table partitions.csv
+
+
+# ESP-IDF Partition Table
+# Name,	Type,	SubType,	Offset,	Size,	Flags
+nvs,	data,	nvs,	0x9000,	0x5000,
+otadata,	data,	ota,	0xe000,	0x2000,
+app0,	app,	ota_0,	0x10000,	0x32F000,
+phy_init, data, phy, 0x33F000, 0x1000,
+app1,   app,    ota_1,  0x340000, 0x4C0000,
+
+
+
+
+
+INFO - Partition PartitionEntry { magic: 20650, raw_type: 1, raw_subtype: 2, offset: 36864, len: 24576, label: "nvs", flags: 0, is_read_only: false, is_encrypted: false }
+INFO - Partition PartitionEntry { magic: 20650, raw_type: 1, raw_subtype: 1, offset: 61440, len: 4096, label: "phy_init", flags: 0, is_read_only: false, is_encrypted: false }
+INFO - Partition PartitionEntry { magic: 20650, raw_type: 0, raw_subtype: 0, offset: 65536, len: 8323072, label: "factory", flags: 0, is_read_only: false, is_encrypted: false }
+INFO - Currently booted partition Ok(Some(PartitionEntry { magic: 20650, raw_type: 0, raw_subtype: 0, offset: 65536, len: 8323072, label: "factory", flags: 0, is_read_only: false, is_encrypted: false }))
