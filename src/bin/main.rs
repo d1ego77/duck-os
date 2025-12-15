@@ -97,21 +97,28 @@ impl<'a> Ota<'a> {
             &mut self.buffer,
         ) {
             for part in pt.iter() {
-                let size = part.len() ;
-                info!("{:?}", part)
-                //info!("Partition: {}  | offset:{} | size: {}", part.label_as_str(), part.offset(), size);
+                let size = part.len();
+                //info!("{:?}", part)
+                info!(
+                    "Partition: {}  | offset:{} | size: {}",
+                    part.label_as_str(),
+                    part.offset(),
+                    size
+                );
             }
             if let Ok(current_partition) = pt.booted_partition() {
                 if let Some(current_partition) = current_partition {
-                    info!(
-                        "Partition booted: {:?}",
-                        current_partition.label_as_str()
-                    );
+                    info!("Partition booted: {:?}", current_partition.label_as_str());
                 }
+            }
+            if let Ok(mut ota_updater) = esp_bootloader_esp_idf::ota_updater::OtaUpdater::new(
+                &mut self.flash_storage,
+                &mut self.buffer,
+            ) {
+                info!("Current partition stated: {:?}", ota_updater.current_ota_state())
             }
         }
     }
-
     fn say_duck(self) {
         self.spawner.spawn(print_duck()).ok();
     }
