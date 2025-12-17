@@ -66,6 +66,7 @@ critical-section = "1.2.0"
 static_cell      = "2.1.1"
 embedded-storage = "0.3.1"
 esp-storage = { version = "0.8.1", features = ["esp32c6"] }
+embassy-sync = "0.7.2"
 
 
 [profile.dev]

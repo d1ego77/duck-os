@@ -8,8 +8,12 @@
 
 use core::ffi::c_float;
 
+use alloc::string::String;
 use bt_hci::controller::ExternalController;
 use embassy_executor::Spawner;
+use embassy_net::Stack;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer};
 use embedded_storage::Storage;
 use esp_bootloader_esp_idf::partitions::PartitionTable;
@@ -17,6 +21,7 @@ use esp_hal::clock::CpuClock;
 use esp_hal::peripherals::FLASH;
 use esp_hal::timer::timg::TimerGroup;
 use esp_radio::ble::controller::BleConnector;
+use esp_radio::wifi::{ClientConfig, ModeConfig, ScanConfig, WifiController, WifiEvent, WifiStaState};
 use esp_storage::FlashStorage;
 use log::info;
 use trouble_host::prelude::*;
@@ -27,6 +32,23 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 }
 
 extern crate alloc;
+
+macro_rules! mk_static {
+    ($t:ty,$val:expr) => {{
+        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
+        #[deny(unused_attributes)]
+        let x = STATIC_CELL.uninit().write(($val));
+        x
+    }};
+}
+
+struct FirmwareInfo {
+    firm_type: u16,
+    name: String,
+    path: String,
+
+}
+static CH_LOAD_FIRMWARE: Channel<CriticalSectionRawMutex, FirmwareInfo, 1> = Channel::new();
 
 const CONNECTIONS_MAX: usize = 1;
 const L2CAP_CHANNELS_MAX: usize = 1;
@@ -54,8 +76,12 @@ async fn main(spawner: Spawner) -> ! {
 
     info!("Embassy initialized!");
 
-    let radio_init = esp_radio::init().expect("Failed to initialize Wi-Fi/BLE controller");
-    let (mut _wifi_controller, _interfaces) =
+    let radio_init = &*mk_static!(
+        esp_radio::Controller<'static>,
+        esp_radio::init().expect("Failed to initialize Wi-Fi/BLE controller")
+    );
+
+    let (wifi_controller, interfaces) =
         esp_radio::wifi::new(&radio_init, peripherals.WIFI, Default::default())
             .expect("Failed to initialize Wi-Fi controller");
 
@@ -66,32 +92,46 @@ async fn main(spawner: Spawner) -> ! {
 
     let _stack = trouble_host::new(ble_controller, &mut resources);
 
-    // TODO: Spawn some tasks
-    let _ = spawner;
+    //Wifi connections
+    let config = embassy_net::Config::dhcpv4(Default::default());
+    let rng = esp_hal::rng::Rng::new();
+    let seed = (rng.random() as u64) << 32 | rng.random() as u64;
+    let wifi_interface = interfaces.sta;
 
-    let ota = Ota::new(&spawner, peripherals.FLASH);
-    ota.show_partitions_info();
+    let (stack, runner) = embassy_net::new(
+        wifi_interface,
+        config,
+        mk_static!(
+            embassy_net::StackResources<3>,
+            embassy_net::StackResources::<3>::new()
+        ),
+        seed,
+    );
+
+    spawner.spawn(initialize_wifi_connection(wifi_controller,"Diego", "Diego777")).ok();
+    spawner.spawn(firmware_loader(peripherals.FLASH, stack.clone())).ok();
+
 
     loop {
         info!("Hello world!");
+        let firmware_info = FirmwareInfo { firm_type: 1, name: "duck-os.bin".into(), path: "http://127.0.0.1".into()};
+        CH_LOAD_FIRMWARE.send(firmware_info).await;
         Timer::after(Duration::from_secs(1)).await;
     }
 }
 
-struct Ota<'a> {
-    spawner: &'a Spawner,
-    flash_storage: FlashStorage<'a>,
+struct Ota<'a>{
+    flash_storage: &'a FlashStorage<'a>,
     buffer: [u8; esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN],
 }
-impl<'a> Ota<'a> {
-    fn new(spawner: &'a Spawner, flash: FLASH<'a>) -> Self {
+impl <'a> Ota <'a> {
+    fn new(storage:&'a FlashStorage<'a>) -> Self {
         Self {
-            spawner,
-            flash_storage: FlashStorage::new(flash),
+            flash_storage: storage,
             buffer: [0u8; esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN],
         }
     }
-    fn show_partitions_info(mut self) {
+    fn show_partitions_info(&mut self) {
         if let Ok(pt) = esp_bootloader_esp_idf::partitions::read_partition_table(
             &mut self.flash_storage,
             &mut self.buffer,
@@ -112,21 +152,77 @@ impl<'a> Ota<'a> {
                 }
             }
             if let Ok(mut ota_updater) = esp_bootloader_esp_idf::ota_updater::OtaUpdater::new(
-                &mut self.flash_storage,
-                &mut self.buffer,
-            ) {
-                info!("Current partition stated: {:?}", ota_updater.current_ota_state())
-            }
+                 storage,
+                 &mut self.buffer,
+             ) {
+                 info!("Current partition stated: {:?}", ota_updater.current_ota_state())
+             }
         }
     }
-    fn say_duck(self) {
-        self.spawner.spawn(print_duck()).ok();
+}
+
+#[embassy_executor::task]
+async fn firmware_loader(flash: FLASH<'static>, stack: Stack<'static>) {
+    let mut firmware_loader_running = false;
+    let mut flash_storage = FlashStorage::new(flash);
+    loop {
+         let mut ota = Ota::new(&mut flash_storage);
+         let firmware_info = CH_LOAD_FIRMWARE.receive().await;
+         if firmware_loader_running == true {
+             continue;
+         }
+        firmware_loader_running = true;
+        ota.show_partitions_info();
+        info!("Type: {}", firmware_info.firm_type);
+        info!("Name: {}", firmware_info.name);
+        info!("Path: {}", firmware_info.path);
+        Timer::after(Duration::from_secs(10)).await;
+        firmware_loader_running = false;
     }
 }
+
 #[embassy_executor::task]
-async fn print_duck() {
+async fn initialize_wifi_connection(mut controller: WifiController<'static>, wifi_name: &'static str, password:&'static str) {
+    info!("start connection task");
+    info!("Device capabilities: {:?}", controller.capabilities());
     loop {
-        info!("Duck duck duck!");
-        Timer::after(Duration::from_secs(1)).await;
+        match esp_radio::wifi::sta_state() {
+            WifiStaState::Connected => {
+                // wait until we're no longer connected
+                controller.wait_for_event(WifiEvent::StaDisconnected).await;
+                Timer::after(Duration::from_millis(5000)).await
+            }
+            _ => {}
+        }
+        if !matches!(controller.is_started(), Ok(true)) {
+            let client_config = ModeConfig::Client(
+                ClientConfig::default()
+                    .with_ssid(wifi_name.into())
+                    .with_password(password.into()),
+            );
+            controller.set_config(&client_config).unwrap();
+            info!("Wifi: starting ....");
+            controller.start_async().await.unwrap();
+            info!("Wifi: started!");
+
+            info!("Wifi: connections list:");
+            let scan_config = ScanConfig::default().with_max(10);
+            let result = controller
+                .scan_with_config_async(scan_config)
+                .await
+                .unwrap();
+            for ap in result {
+                info!("{:?}", ap);
+            }
+        }
+        info!("Wifi: connecting....");
+
+        match controller.connect_async().await {
+            Ok(_) => info!("Wifi: connected!"),
+            Err(e) => {
+                info!("Failed to connect to wifi: {e:?}");
+                Timer::after(Duration::from_millis(5000)).await
+            }
+        }
     }
 }

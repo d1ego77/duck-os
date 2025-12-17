@@ -8,6 +8,27 @@ factory, app, factory,     0x12000,   0x7E0000,
 
 
 
+struct FirmwareInfo {
+    firm_type: u16,
+    name: String,
+    path: String,
+}
+static CH_LOAD_FIRMWARE: Channel<CriticalSectionRawMutex, FirmwareInfo, 1> = Channel::new();
+
+
+#[embassy_executor::task]
+async fn firmware_loader() {
+    loop {
+         let firmware_info = CH_LOAD_FIRMWARE.receive().await;
+        info!("Type: {}", firmware_info.firm_type);
+        info!("Name: {}", firmware_info.name);
+        info!("Path: {}", firmware_info.path);
+        Timer::after(Duration::from_secs(1)).await;
+    }
+}
+
+
+
 8323072
 
 
