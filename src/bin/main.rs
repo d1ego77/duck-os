@@ -6,8 +6,9 @@
     holding buffers for the duration of a data transfer."
 )]
 use core::ffi::c_float;
+use core::str::FromStr;
 
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use bt_hci::controller::ExternalController;
 use embassy_embedded_hal::adapter::BlockingAsync;
 use embassy_executor::Spawner;
@@ -20,16 +21,17 @@ use embedded_io_async::{Read, Write};
 use embedded_storage::Storage;
 use embedded_storage::nor_flash::NorFlash;
 use embedded_storage_async::nor_flash::{NorFlash as AsyncNorFlash, ReadNorFlash};
-use esp_bootloader_esp_idf::ota_updater::OtaUpdater;
+use esp_bootloader_esp_idf::ota_updater::{self, OtaUpdater};
 use esp_bootloader_esp_idf::partitions::{AppPartitionSubType, FlashRegion, PartitionTable};
 use esp_hal::clock::CpuClock;
 use esp_hal::peripherals::FLASH;
 use esp_hal::timer::timg::TimerGroup;
 use esp_radio::ble::controller::BleConnector;
 use esp_radio::wifi::{
-    ClientConfig, ModeConfig, ScanConfig, WifiController, WifiEvent, WifiStaState,
+    ClientConfig, ModeConfig, ScanConfig, WifiController, WifiDevice, WifiEvent, WifiStaState
 };
 use esp_storage::FlashStorage;
+use embassy_net::Runner;
 use heapless::format;
 use log::info;
 use trouble_host::prelude::*;
@@ -92,6 +94,8 @@ async fn main(spawner: Spawner) -> ! {
         esp_radio::wifi::new(&radio_init, peripherals.WIFI, Default::default())
             .expect("Failed to initialize Wi-Fi controller");
 
+    let wifi_interface = interfaces.sta;
+
     let transport = BleConnector::new(&radio_init, peripherals.BT, Default::default()).unwrap();
     let ble_controller = ExternalController::<_, 20>::new(transport);
     let mut resources: HostResources<DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
@@ -103,7 +107,16 @@ async fn main(spawner: Spawner) -> ! {
     let config = embassy_net::Config::dhcpv4(Default::default());
     let rng = esp_hal::rng::Rng::new();
     let seed = (rng.random() as u64) << 32 | rng.random() as u64;
-    let wifi_interface = interfaces.sta;
+
+
+    spawner
+        .spawn(initialize_wifi_connection(
+            wifi_controller,
+            "Diego",
+            "Diego777",
+        ))
+        .ok();
+    Timer::after(Duration::from_secs(20)).await;
 
     let (stack, runner) = embassy_net::new(
         wifi_interface,
@@ -114,14 +127,33 @@ async fn main(spawner: Spawner) -> ! {
         ),
         seed,
     );
+
+    spawner.spawn(net_task(runner)).ok();
+
+    loop {
+        if stack.is_link_up() {
+            break;
+        }
+        Timer::after(Duration::from_millis(500)).await;
+    }
+
+    info!("Version: {}", 11);
+    info!("Waiting to get IP address...");
+    Timer::after(Duration::from_millis(50)).await;
+
+    loop {
+        if let Some(config) = stack.config_v4() {
+            info!("Got IP: {}", config.address);
+            break;
+        }
+        Timer::after(Duration::from_millis(500)).await;
+    }
+    Timer::after(Duration::from_secs(2)).await;
+
+
+
     let flash = FlashStorage::new(peripherals.FLASH);
-    spawner
-        .spawn(initialize_wifi_connection(
-            wifi_controller,
-            "Diego",
-            "Diego777",
-        ))
-        .ok();
+
     spawner.spawn(firmware_loader(flash, stack.clone())).ok();
 
     loop {
@@ -134,6 +166,74 @@ async fn main(spawner: Spawner) -> ! {
         CH_LOAD_FIRMWARE.send(firmware_info).await;
         Timer::after(Duration::from_secs(1)).await;
     }
+}
+
+struct OtaHttpUpdater<'a, F>
+where
+    F: embedded_storage::Storage,
+{
+    ota: Ota<'a, F>,
+    socket: TcpSocket<'a>,
+    host: String,
+    path: String
+}
+impl<'a, F> OtaHttpUpdater<'a, F>
+where
+    F: embedded_storage::Storage,
+{
+    fn new(ota: Ota<'a, F>, socket: TcpSocket<'a>, host: &str, path: &str) -> Self {
+        Self { ota, socket, host: host.into(), path: path.into() }
+    }
+    async fn update_firmware(self){
+        self.ota.write_firmware(&self.socket).await;
+    }
+    async fn http_get(
+        mut self,
+    ) -> DuckResult<Self> {
+        let request_str = format!(
+            "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+            self.path, self.host
+        );
+        self.socket.set_keep_alive(Some(Duration::from_secs(15)));
+        let remote_endpoint = (core::net::Ipv4Addr::new(192, 168, 100, 56), 80);
+        info!("connecting...");
+        if let Err(e) = self.socket.connect(remote_endpoint).await {
+            info!("connect error: {:?}", e);
+        }
+        let request: heapless::String<1024> = if let Ok(request_str) = request_str {
+            request_str
+        } else {
+            return Err(DuckError::NetworkError);
+        };
+
+        match self.socket.write_all(request.as_bytes()).await {
+            Ok(_) => {
+                let mut buf = [0u8; 1];
+                let mut last = [0u8; 4];
+
+                loop {
+                    match self.socket.read_exact(&mut buf).await {
+                        Ok(_) => {
+                            // Saltar headers
+                            last.rotate_left(1);
+                            last[3] = buf[0];
+                            if &last == b"\r\n\r\n" {
+                                break;
+                            }
+                        }
+                        Err(_) => {
+                            return Err(DuckError::NetworkError);
+                        }
+                    };
+                }
+            }
+            Err(_) => return Err(DuckError::NetworkError),
+        };
+
+        Ok(self)
+    }
+
+
 }
 
 struct Ota<'a, F>
@@ -150,21 +250,30 @@ where
     fn new(
         storage: &'a mut F,
         buffer: &'a mut [u8; esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN],
-    ) -> Self {
-        Self {
-            updater: OtaUpdater::new(storage, buffer).unwrap(),
-        }
+    ) -> DuckResult<Self> {
+        let updater = match OtaUpdater::new(storage, buffer) {
+            Ok(ota_updater)=> ota_updater,
+            Err(e) => {
+                info!("Fail to get updater: {}", e.to_string());
+                return Err(DuckError::NetworkError);
+            }
+        };
+        Ok(Self {
+            updater,
+        })
     }
     async fn write_firmware<R>(mut self, stream: &R)
     where
         R: Read,
     {
         let np = self.updater.next_partition().unwrap();
-        loop {
+        // loop{
             info!("test");
-        }
+
+        // }
     }
 }
+
 #[derive(Debug)]
 enum DuckError {
     NetworkError,
@@ -176,9 +285,8 @@ fn handle_error(error: &DuckError) {
 }
 
 pub type DuckResult<T> = core::result::Result<T, DuckError>;
-
 async fn http_get<'a>(
-    socket:&'a mut TcpSocket<'a>,
+    socket: &'a mut TcpSocket<'a>,
     host: &'a str,
     path: &'a str,
 ) -> DuckResult<&'a mut TcpSocket<'a>> {
@@ -227,30 +335,35 @@ async fn firmware_loader(mut flash: FlashStorage<'static>, stack: Stack<'static>
 
     let mut rx_buffer = [0; 4096];
     let mut tx_buffer = [0; 4096];
-    let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
 
     loop {
-
         // let mut ota = Ota::new(&mut flash_storage);
         let firmware_info = CH_LOAD_FIRMWARE.receive().await;
         if firmware_loader_running == true {
             continue;
         }
-        let socket2 = http_get(&mut socket, "192.168.100.185:80", "firmware.bin")
-        .await
-        .unwrap();
-        let ota = Ota::new(&mut flash, &mut buffer);
-        ota.write_firmware(&socket2).await;
         firmware_loader_running = true;
         // ota.show_partitions_info();
         info!("Type: {}", firmware_info.firm_type);
         info!("Name: {}", firmware_info.name);
         info!("Path: {}", firmware_info.path);
-        Timer::after(Duration::from_secs(10)).await;
+        let socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
+        info!("paso1");
+        let ota = Ota::new(&mut flash, &mut buffer);
+        info!("paso2");
+        let ota_http_updater = OtaHttpUpdater::new(ota.expect("Error"), socket, "http://192.168.100.56:80", "firmware.bin");
+        info!("paso3");
+        ota_http_updater.http_get().await.expect("Error al conectar").update_firmware().await;
+        info!("paso4");
+
         firmware_loader_running = false;
+        Timer::after(Duration::from_secs(10)).await;
     }
 }
-
+#[embassy_executor::task]
+async fn net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
+    runner.run().await
+}
 #[embassy_executor::task]
 async fn initialize_wifi_connection(
     mut controller: WifiController<'static>,
