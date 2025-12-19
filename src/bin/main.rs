@@ -5,24 +5,32 @@
     reason = "mem::forget is generally not safe to do with esp_hal types, especially those \
     holding buffers for the duration of a data transfer."
 )]
-
 use core::ffi::c_float;
 
 use alloc::string::String;
 use bt_hci::controller::ExternalController;
+use embassy_embedded_hal::adapter::BlockingAsync;
 use embassy_executor::Spawner;
 use embassy_net::Stack;
+use embassy_net::tcp::TcpSocket;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer};
+use embedded_io_async::{Read, Write};
 use embedded_storage::Storage;
-use esp_bootloader_esp_idf::partitions::PartitionTable;
+use embedded_storage::nor_flash::NorFlash;
+use embedded_storage_async::nor_flash::{NorFlash as AsyncNorFlash, ReadNorFlash};
+use esp_bootloader_esp_idf::ota_updater::OtaUpdater;
+use esp_bootloader_esp_idf::partitions::{AppPartitionSubType, FlashRegion, PartitionTable};
 use esp_hal::clock::CpuClock;
 use esp_hal::peripherals::FLASH;
 use esp_hal::timer::timg::TimerGroup;
 use esp_radio::ble::controller::BleConnector;
-use esp_radio::wifi::{ClientConfig, ModeConfig, ScanConfig, WifiController, WifiEvent, WifiStaState};
+use esp_radio::wifi::{
+    ClientConfig, ModeConfig, ScanConfig, WifiController, WifiEvent, WifiStaState,
+};
 use esp_storage::FlashStorage;
+use heapless::format;
 use log::info;
 use trouble_host::prelude::*;
 
@@ -46,7 +54,6 @@ struct FirmwareInfo {
     firm_type: u16,
     name: String,
     path: String,
-
 }
 static CH_LOAD_FIRMWARE: Channel<CriticalSectionRawMutex, FirmwareInfo, 1> = Channel::new();
 
@@ -107,72 +114,135 @@ async fn main(spawner: Spawner) -> ! {
         ),
         seed,
     );
-
-    spawner.spawn(initialize_wifi_connection(wifi_controller,"Diego", "Diego777")).ok();
-    spawner.spawn(firmware_loader(peripherals.FLASH, stack.clone())).ok();
-
+    let flash = FlashStorage::new(peripherals.FLASH);
+    spawner
+        .spawn(initialize_wifi_connection(
+            wifi_controller,
+            "Diego",
+            "Diego777",
+        ))
+        .ok();
+    spawner.spawn(firmware_loader(flash, stack.clone())).ok();
 
     loop {
         info!("Hello world!");
-        let firmware_info = FirmwareInfo { firm_type: 1, name: "duck-os.bin".into(), path: "http://127.0.0.1".into()};
+        let firmware_info = FirmwareInfo {
+            firm_type: 1,
+            name: "duck-os.bin".into(),
+            path: "http://127.0.0.1".into(),
+        };
         CH_LOAD_FIRMWARE.send(firmware_info).await;
         Timer::after(Duration::from_secs(1)).await;
     }
 }
 
-struct Ota<'a>{
-    flash_storage: &'a FlashStorage<'a>,
-    buffer: [u8; esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN],
+struct Ota<'a, F>
+where
+    F: embedded_storage::Storage,
+{
+    updater: OtaUpdater<'a, F>,
 }
-impl <'a> Ota <'a> {
-    fn new(storage:&'a FlashStorage<'a>) -> Self {
+
+impl<'a, F> Ota<'a, F>
+where
+    F: embedded_storage::Storage,
+{
+    fn new(
+        storage: &'a mut F,
+        buffer: &'a mut [u8; esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN],
+    ) -> Self {
         Self {
-            flash_storage: storage,
-            buffer: [0u8; esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN],
+            updater: OtaUpdater::new(storage, buffer).unwrap(),
         }
     }
-    fn show_partitions_info(&mut self) {
-        if let Ok(pt) = esp_bootloader_esp_idf::partitions::read_partition_table(
-            &mut self.flash_storage,
-            &mut self.buffer,
-        ) {
-            for part in pt.iter() {
-                let size = part.len();
-                //info!("{:?}", part)
-                info!(
-                    "Partition: {}  | offset:{} | size: {}",
-                    part.label_as_str(),
-                    part.offset(),
-                    size
-                );
-            }
-            if let Ok(current_partition) = pt.booted_partition() {
-                if let Some(current_partition) = current_partition {
-                    info!("Partition booted: {:?}", current_partition.label_as_str());
-                }
-            }
-            if let Ok(mut ota_updater) = esp_bootloader_esp_idf::ota_updater::OtaUpdater::new(
-                 storage,
-                 &mut self.buffer,
-             ) {
-                 info!("Current partition stated: {:?}", ota_updater.current_ota_state())
-             }
+    async fn write_firmware<R>(mut self, stream: &R)
+    where
+        R: Read,
+    {
+        let np = self.updater.next_partition().unwrap();
+        loop {
+            info!("test");
         }
+    }
+}
+#[derive(Debug)]
+enum DuckError {
+    NetworkError,
+}
+fn handle_error(error: &DuckError) {
+    match error {
+        DuckError::NetworkError => defmt::error!("Network error ocurred."),
     }
 }
 
+pub type DuckResult<T> = core::result::Result<T, DuckError>;
+
+async fn http_get<'a>(
+    socket:&'a mut TcpSocket<'a>,
+    host: &'a str,
+    path: &'a str,
+) -> DuckResult<&'a mut TcpSocket<'a>> {
+    let request_str = format!(
+        "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+        path, host
+    );
+
+    let request: heapless::String<1024> = if let Ok(request_str) = request_str {
+        request_str
+    } else {
+        return Err(DuckError::NetworkError);
+    };
+
+    match socket.write_all(request.as_bytes()).await {
+        Ok(_) => {
+            let mut buf = [0u8; 1];
+            let mut last = [0u8; 4];
+
+            loop {
+                match socket.read_exact(&mut buf).await {
+                    Ok(_) => {
+                        // Saltar headers
+                        last.rotate_left(1);
+                        last[3] = buf[0];
+                        if &last == b"\r\n\r\n" {
+                            break;
+                        }
+                    }
+                    Err(_) => {
+                        return Err(DuckError::NetworkError);
+                    }
+                };
+            }
+        }
+        Err(_) => return Err(DuckError::NetworkError),
+    };
+
+    Ok(socket)
+}
+
 #[embassy_executor::task]
-async fn firmware_loader(flash: FLASH<'static>, stack: Stack<'static>) {
+async fn firmware_loader(mut flash: FlashStorage<'static>, stack: Stack<'static>) {
     let mut firmware_loader_running = false;
-    let mut flash_storage = FlashStorage::new(flash);
+    let mut buffer = [0u8; esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN];
+
+    let mut rx_buffer = [0; 4096];
+    let mut tx_buffer = [0; 4096];
+    let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
+
     loop {
-         let mut ota = Ota::new(&mut flash_storage);
-         let firmware_info = CH_LOAD_FIRMWARE.receive().await;
-         if firmware_loader_running == true {
-             continue;
-         }
+
+        // let mut ota = Ota::new(&mut flash_storage);
+        let firmware_info = CH_LOAD_FIRMWARE.receive().await;
+        if firmware_loader_running == true {
+            continue;
+        }
+        let socket2 = http_get(&mut socket, "192.168.100.185:80", "firmware.bin")
+        .await
+        .unwrap();
+        let ota = Ota::new(&mut flash, &mut buffer);
+        ota.write_firmware(&socket2).await;
         firmware_loader_running = true;
-        ota.show_partitions_info();
+        // ota.show_partitions_info();
         info!("Type: {}", firmware_info.firm_type);
         info!("Name: {}", firmware_info.name);
         info!("Path: {}", firmware_info.path);
@@ -182,7 +252,11 @@ async fn firmware_loader(flash: FLASH<'static>, stack: Stack<'static>) {
 }
 
 #[embassy_executor::task]
-async fn initialize_wifi_connection(mut controller: WifiController<'static>, wifi_name: &'static str, password:&'static str) {
+async fn initialize_wifi_connection(
+    mut controller: WifiController<'static>,
+    wifi_name: &'static str,
+    password: &'static str,
+) {
     info!("start connection task");
     info!("Device capabilities: {:?}", controller.capabilities());
     loop {
