@@ -71,6 +71,9 @@ embassy-embedded-hal = "0.5.0"
 embedded-storage-async = "0.4.1"
 heapless = "0.9.2"
 defmt = "1.0.1"
+esp-hal-smartled = { git = "https://github.com/esp-rs/esp-hal-community.git", rev = "d9239ac" }
+smart-leds = "0.4.0"
+rgb = "0.8.52"
 
 
 
