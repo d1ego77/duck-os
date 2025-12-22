@@ -1,3 +1,15 @@
+espflash erase-flash
+
+cargo run --release -- --partition-table partitions.csv
+
+espflash save-image --chip esp32c6 target/riscv32imac-unknown-none-elf/release/esp-farm esp-farm-ota.bin
+
+
+
+
+
+
+
 # ESP-IDF Partition Table
 # Name,	Type,	SubType,	Offset, 	Size,	Flags
 nvs,	data,	nvs,	    0x9000,	  0x6000,

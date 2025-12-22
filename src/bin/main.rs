@@ -5,14 +5,10 @@
     reason = "mem::forget is generally not safe to do with esp_hal types, especially those \
     holding buffers for the duration of a data transfer."
 )]
-use core::ffi::c_float;
-use core::net::Ipv4Addr;
-use core::str::FromStr;
-
 use alloc::borrow::ToOwned;
 use alloc::string::{String, ToString};
 use bt_hci::controller::ExternalController;
-use embassy_embedded_hal::adapter::BlockingAsync;
+use core::net::Ipv4Addr;
 use embassy_executor::Spawner;
 use embassy_net::Config;
 use embassy_net::Runner;
@@ -25,16 +21,12 @@ use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Timer};
 use embedded_io_async::{Read, Write};
 use embedded_storage::Storage;
-use embedded_storage::nor_flash::NorFlash;
-use embedded_storage_async::nor_flash::{NorFlash as AsyncNorFlash, ReadNorFlash};
-use esp_bootloader_esp_idf::ota_updater::{self, OtaUpdater};
-use esp_bootloader_esp_idf::partitions::{AppPartitionSubType, FlashRegion, PartitionTable};
+use esp_bootloader_esp_idf::ota_updater::OtaUpdater;
+use esp_bootloader_esp_idf::partitions::FlashRegion;
 use esp_hal::clock::CpuClock;
-use esp_hal::peripherals::FLASH;
 use esp_hal::peripherals::GPIO8;
 use esp_hal::peripherals::RMT;
-use esp_hal::rmt::{PulseCode, Rmt};
-use esp_hal::time::Rate;
+use esp_hal::rmt::PulseCode;
 use esp_hal::timer::timg::TimerGroup;
 use esp_hal_smartled::SmartLedsAdapter;
 use esp_radio::ble::controller::BleConnector;
@@ -64,27 +56,25 @@ macro_rules! mk_static {
     }};
 }
 
-const CURRENT_VERSION: &str = "1.0.0.0";
-const FIRMWARE_FILE_NAME: &str = "esp-farm-ota.bin";
-const FIRMWARE_HOST: &str = "http://192.168.100.56:80";
+const CURRENT_VERSION: &str = "1.0.5";
+const FIRMWARE_FILE_NAME: &str = "duck-firmware.bin";
+const VERSION_FILE_NAME: &str = "version.json";
+const FIRMWARE_HOST: &str = "http://192.168.100.185:80";
 const WIFI_NAME: &str = "Diego";
 const WIFI_PASSWORD: &str = "Diego777";
 
 const CONNECTIONS_MAX: usize = 1;
 const L2CAP_CHANNELS_MAX: usize = 1;
-static UPDATE_FIRMWARE: Channel<CriticalSectionRawMutex, FirmwareInfo, 1> = Channel::new();
+
 static WIFI_READY: Signal<CriticalSectionRawMutex, WifiState> = Signal::new();
 static CHANGE_LED_COLOR: Channel<CriticalSectionRawMutex, DuckColor, 4> = Channel::new();
 
-struct FirmwareInfo {
-    firmware_type: u16,
-    host: String,
-    path: String,
-}
+#[allow(dead_code)]
 enum WifiState {
-    connected,
-    no_connected,
+    Connected,
+    NoConnected,
 }
+
 struct NetworkConfiguration<D>
 where
     D: Driver,
@@ -117,6 +107,7 @@ async fn main(spawner: Spawner) -> ! {
 
     info!("Embassy initialized!");
     info!("Current Version: {}", get_current_version());
+
     spawner
         .spawn(rgb_control(peripherals.RMT, peripherals.GPIO8))
         .ok();
@@ -163,20 +154,230 @@ async fn main(spawner: Spawner) -> ! {
     wait_for_network_ip(stack).await;
 
     let flash = FlashStorage::new(peripherals.FLASH);
-
-    spawner
-        .spawn(firmware_loader_service(flash, stack.clone()))
-        .ok();
+    let input_config = esp_hal::gpio::InputConfig::default().with_pull(esp_hal::gpio::Pull::Up);
+    let boot_button = esp_hal::gpio::Input::new(peripherals.GPIO9, input_config);
+    let duck_firmware = DuckFirmware::new(
+        boot_button,
+        flash,
+        stack.clone(),
+        FIRMWARE_HOST,
+        FIRMWARE_FILE_NAME,
+        VERSION_FILE_NAME,
+    );
+    spawner.spawn(firmware_update_task(duck_firmware)).ok();
 
     loop {
         info!("running...");
-        let firmware_info = FirmwareInfo {
-            firmware_type: 1,
-            host: FIRMWARE_HOST.into(),
-            path: FIRMWARE_FILE_NAME.into(),
-        };
-        UPDATE_FIRMWARE.send(firmware_info).await;
-        Timer::after(Duration::from_secs(1)).await;
+        Timer::after(Duration::from_secs(5)).await;
+    }
+}
+
+#[embassy_executor::task]
+async fn firmware_update_task(mut duck_firmware: DuckFirmware<'static>) {
+    duck_firmware.update_firmware().await;
+
+}
+struct DuckFirmware<'a> {
+    boot_button: esp_hal::gpio::Input<'a>,
+    flash: FlashStorage<'a>,
+    stack: Stack<'a>,
+    host: String,
+    path: String,
+    version_path: String,
+}
+
+impl<'a> DuckFirmware<'a> {
+    fn new(
+        boot_button: esp_hal::gpio::Input<'a>,
+        flash: FlashStorage<'a>,
+        stack: Stack<'a>,
+        host: &str,
+        path: &str,
+        version_path: &str,
+    ) -> Self {
+        Self {
+            boot_button,
+            flash,
+            stack,
+            host: host.into(),
+            version_path: version_path.into(),
+            path: path.into(),
+        }
+    }
+    async fn update_firmware(&mut self) {
+        loop {
+            if !self.boot_button.is_low(){
+                info!("cheking {}", self.boot_button.is_low());
+                Timer::after(Duration::from_secs(5)).await;
+                continue;
+            } else {
+                match self.get_server_framework_version().await {
+                    Ok(version) => {
+                        info!("New version: {} - Current Version:{}", version, CURRENT_VERSION);
+                        Timer::after(Duration::from_secs(20)).await;
+                        if is_newer(version.as_str(), CURRENT_VERSION) {
+                            self.write_new_firmware().await;
+                        }
+                    },
+                    Err(_) => {
+                        info!("Fail to get server version");
+                    }
+                }
+            }
+        }
+    }
+    #[allow(unused_assignments)]
+    async fn write_new_firmware(&mut self) {
+        let mut buffer = [0u8; esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN];
+        let mut rx_buffer = [0; 4096];
+        let mut tx_buffer = [0; 4096];
+
+        set_rgb_led_color(DuckColor::Pink).await;
+        Timer::after(Duration::from_secs(2)).await;
+        info!("Name: {}", self.host);
+        info!("Path: {}", self.path);
+        let socket = TcpSocket::new(self.stack, &mut rx_buffer, &mut tx_buffer);
+        let ota = Ota::new(&mut self.flash, &mut buffer);
+        match ota {
+            Ok(ota) => {
+                let ota_http_updater = OtaHttpUpdater::new(ota, socket, &self.host, &self.path);
+                match ota_http_updater.check_firmware_server_connection().await {
+                    Ok(firmware_server) => firmware_server.update_firmware().await,
+                    Err(_) => {
+                        info!("Fail to get the new firmware");
+                    }
+                };
+            }
+            Err(_) => {
+                info!("Fail to build OTA");
+            }
+        }
+        set_rgb_led_color(DuckColor::Green).await;
+        Timer::after(Duration::from_secs(2)).await;
+    }
+    async fn get_server_framework_version(&mut self) -> DuckResult<String> {
+        let mut rx_buffer = [0; 4096];
+        let mut tx_buffer = [0; 4096];
+
+        let request_str = format!(
+            "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+            self.version_path, self.host
+        );
+        let mut socket = TcpSocket::new(self.stack, &mut rx_buffer, &mut tx_buffer);
+
+        socket.set_keep_alive(Some(Duration::from_secs(15)));
+
+        info!("connecting...");
+        let remote = self.get_remote_endpoint().ok_or(DuckError::NetworkError)?;
+
+        socket
+            .connect(remote)
+            .await
+            .map_err(|_| DuckError::NetworkError)?;
+
+        let request: heapless::String<1024> = request_str.map_err(|_| DuckError::NetworkError)?;
+
+        socket
+            .write_all(request.as_bytes())
+            .await
+            .map_err(|_| DuckError::NetworkError)?;
+
+        /* -------------------------------------------------
+         * 1️⃣ Saltar headers HTTP
+         * ------------------------------------------------- */
+        let mut buf = [0u8; 1];
+        let mut last = [0u8; 4];
+
+        loop {
+            socket
+                .read_exact(&mut buf)
+                .await
+                .map_err(|_| DuckError::NetworkError)?;
+
+            last.rotate_left(1);
+            last[3] = buf[0];
+
+            if &last == b"\r\n\r\n" {
+                break;
+            }
+        }
+
+        /* -------------------------------------------------
+         * 2️⃣ Leer body (JSON)
+         * ------------------------------------------------- */
+        let mut body = [0u8; 128];
+        let mut len = 0;
+
+        loop {
+            match socket.read(&mut body[len..]).await {
+                Ok(0) => break, // EOF
+                Ok(n) => {
+                    len += n;
+                    if len >= body.len() {
+                        break;
+                    }
+                }
+                Err(_) => return Err(DuckError::NetworkError),
+            }
+        }
+
+        let version_str =
+            core::str::from_utf8(&body[..len]).map_err(|_| DuckError::NetworkError)?;
+
+        info!("response body: {}", version_str);
+
+        Ok(version_str.to_string())
+    }
+    fn get_remote_endpoint(&self) -> Option<(Ipv4Addr, u16)> {
+        match self.host.strip_prefix("http://") {
+            Some(s) => {
+                match s.split_once(':') {
+                    Some((ip, port)) => {
+                        let mut octets = [0u8; 4];
+                        let mut i = 0;
+                        for part in ip.split('.') {
+                            if i >= 4 {
+                                return None;
+                            }
+                            octets[i] = part.parse().ok()?;
+                            i += 1;
+                        }
+                        if i != 4 {
+                            return None;
+                        }
+                        // parsear puerto
+                        let port = match port.parse().ok() {
+                            Some(port) => port,
+                            None => 0,
+                        };
+                        let [a, b, c, d] = octets;
+                        Some((core::net::Ipv4Addr::new(a, b, c, d), port))
+                    }
+                    None => {
+                        return None;
+                    }
+                }
+            }
+            None => {
+                return None;
+            }
+        }
+    }
+}
+
+fn parse_version(v: &str) -> Option<(u8, u8, u8)> {
+    let mut it = v.trim().split('.');
+    Some((
+        it.next()?.parse().ok()?,
+        it.next()?.parse().ok()?,
+        it.next()?.parse().ok()?,
+    ))
+}
+
+fn is_newer(remote: &str, local: &str) -> bool {
+    match (parse_version(remote), parse_version(local)) {
+        (Some(r), Some(l)) => r > l,
+        _ => false,
     }
 }
 
@@ -208,7 +409,7 @@ async fn wait_for_network_ip<'a>(stack: Stack<'a>) {
     loop {
         if let Some(config) = stack.config_v4() {
             info!("Got IP: {}", config.address);
-            set_rgb_led_color(DuckColor::Green).await;
+            set_rgb_led_color(DuckColor::Orange).await;
             break;
         }
         Timer::after(Duration::from_millis(500)).await;
@@ -361,26 +562,14 @@ where
         };
         Ok(Self { updater })
     }
-    async fn write_firmware<R>(mut self, stream: &mut R)
-    where
+    async fn load_firmware_in_next_partition<'p, R>(
+        stream: &mut R,
+        mut partition: FlashRegion<'p, F>,
+    ) where
         R: Read,
     {
-        if let Ok(state) = self.updater.current_ota_state() {
-            if state == esp_bootloader_esp_idf::ota::OtaImageState::New
-                || state == esp_bootloader_esp_idf::ota::OtaImageState::PendingVerify
-            {
-                info!("Changed state to valid");
-                self.updater.set_current_ota_state(esp_bootloader_esp_idf::ota::OtaImageState::Valid)
-                    .unwrap();
-            }
-        }
-
-        let (mut next_app_partition, part_type) = self.updater.next_partition().unwrap();
-
         let mut buf = [0; 4096];
         let mut offset = 0u32;
-        let mut headers_done = false;
-        let mut sector = 0;
         loop {
             let n = match stream.read(&mut buf).await {
                 Ok(0) => {
@@ -398,22 +587,12 @@ where
 
             // ✅ Saltar headers HTTP
             let payload = data;
-            // let payload = if !headers_done {
-            //     if let Some(pos) = data.windows(4).position(|w| w == b"\r\n\r\n") {
-            //         headers_done = true;
-            //         &data[pos + 4..]
-            //     } else {
-            //         continue;
-            //     }
-            // } else {
-            //     data
-            // };
 
             info!("Received {} bytes", payload.len());
 
             info!("Writing offset {} len {}", offset, payload.len());
 
-            match next_app_partition.write(offset, payload) {
+            match partition.write(offset, payload) {
                 Ok(_) => info!("Chunk written"),
                 Err(e) => {
                     info!("❌ Error writing flash at offset {}: {:?}", offset, e);
@@ -426,6 +605,26 @@ where
             // ✅ Dejar respirar la pila TCP (OBLIGATORIO)
             embassy_time::Timer::after_millis(1).await;
         }
+        info!("Descarga finalizada: {} bytes", offset);
+    }
+    async fn write_firmware<R>(mut self, firmware_stream: &mut R)
+    where
+        R: Read,
+    {
+        if let Ok(state) = self.updater.current_ota_state() {
+            if state == esp_bootloader_esp_idf::ota::OtaImageState::New
+                || state == esp_bootloader_esp_idf::ota::OtaImageState::PendingVerify
+            {
+                info!("Changed state to valid");
+                self.updater
+                    .set_current_ota_state(esp_bootloader_esp_idf::ota::OtaImageState::Valid)
+                    .unwrap();
+            }
+        }
+
+        let (next_app_partition, _) = self.updater.next_partition().unwrap();
+
+        Ota::load_firmware_in_next_partition(firmware_stream, next_app_partition).await;
 
         info!("Activating partition...");
         match self.updater.activate_next_partition() {
@@ -437,10 +636,9 @@ where
             }
         }
 
-        self.updater.set_current_ota_state(esp_bootloader_esp_idf::ota::OtaImageState::New)
+        self.updater
+            .set_current_ota_state(esp_bootloader_esp_idf::ota::OtaImageState::New)
             .unwrap();
-
-        info!("Descarga finalizada: {} bytes", offset);
 
         set_rgb_led_color(DuckColor::Blue).await;
         info!("Reiniciando...");
@@ -454,111 +652,68 @@ where
 enum DuckError {
     NetworkError,
 }
+#[allow(dead_code)]
 fn handle_error(error: &DuckError) {
     match error {
         DuckError::NetworkError => defmt::error!("Network error ocurred."),
     }
 }
 
-pub type DuckResult<T> = core::result::Result<T, DuckError>;
-async fn check_firmware_server_connection<'a>(
-    socket: &'a mut TcpSocket<'a>,
-    host: &'a str,
-    path: &'a str,
-) -> DuckResult<&'a mut TcpSocket<'a>> {
-    let request_str = format!(
-        "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
-        path, host
-    );
+type DuckResult<T> = core::result::Result<T, DuckError>;
 
-    let request: heapless::String<1024> = if let Ok(request_str) = request_str {
-        request_str
-    } else {
-        return Err(DuckError::NetworkError);
-    };
+//#[allow(dead_code)]
+// async fn check_firmware_server_connection<'a>(
+//     socket: &'a mut TcpSocket<'a>,
+//     host: &'a str,
+//     path: &'a str,
+// ) -> DuckResult<&'a mut TcpSocket<'a>> {
+//     let request_str = format!(
+//         "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+//         path, host
+//     );
 
-    match socket.write_all(request.as_bytes()).await {
-        Ok(_) => {
-            let mut buf = [0u8; 1];
-            let mut last = [0u8; 4];
+//     let request: heapless::String<1024> = if let Ok(request_str) = request_str {
+//         request_str
+//     } else {
+//         return Err(DuckError::NetworkError);
+//     };
 
-            loop {
-                match socket.read_exact(&mut buf).await {
-                    Ok(_) => {
-                        // Saltar headers
-                        last.rotate_left(1);
-                        last[3] = buf[0];
-                        if &last == b"\r\n\r\n" {
-                            break;
-                        }
-                    }
-                    Err(_) => {
-                        return Err(DuckError::NetworkError);
-                    }
-                };
-            }
-        }
-        Err(_) => return Err(DuckError::NetworkError),
-    };
+//     match socket.write_all(request.as_bytes()).await {
+//         Ok(_) => {
+//             let mut buf = [0u8; 1];
+//             let mut last = [0u8; 4];
 
-    Ok(socket)
-}
+//             loop {
+//                 match socket.read_exact(&mut buf).await {
+//                     Ok(_) => {
+//                         // Saltar headers
+//                         last.rotate_left(1);
+//                         last[3] = buf[0];
+//                         if &last == b"\r\n\r\n" {
+//                             break;
+//                         }
+//                     }
+//                     Err(_) => {
+//                         return Err(DuckError::NetworkError);
+//                     }
+//                 };
+//             }
+//         }
+//         Err(_) => return Err(DuckError::NetworkError),
+//     };
 
-#[embassy_executor::task]
-async fn firmware_loader_service(mut flash: FlashStorage<'static>, stack: Stack<'static>) {
-    let mut firmware_loader_running = false;
-    let mut buffer = [0u8; esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN];
+//     Ok(socket)
+// }
 
-    let mut rx_buffer = [0; 4096];
-    let mut tx_buffer = [0; 4096];
-
-    loop {
-        let firmware_info = UPDATE_FIRMWARE.receive().await;
-        if firmware_loader_running == true {
-            info!("Continue...");
-            Timer::after(Duration::from_secs(1)).await;
-            continue;
-        }
-        firmware_loader_running = true;
-        info!("Flashing new firmware...");
-        set_rgb_led_color(DuckColor::Pink).await;
-        Timer::after(Duration::from_secs(2)).await;
-        info!("Type: {}", firmware_info.firmware_type);
-        info!("Name: {}", firmware_info.host);
-        info!("Path: {}", firmware_info.path);
-        let socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
-        let ota = Ota::new(&mut flash, &mut buffer);
-        match ota {
-            Ok(ota) => {
-                let ota_http_updater =
-                    OtaHttpUpdater::new(ota, socket, &firmware_info.host, &firmware_info.path);
-                match ota_http_updater.check_firmware_server_connection().await {
-                    Ok(firmware_server) => firmware_server.update_firmware().await,
-                    Err(_) => {
-                        info!("Fail to get the new firmware");
-                        firmware_loader_running = false;
-                    }
-                };
-            }
-            Err(_) => {
-                info!("Fail to build OTA");
-                firmware_loader_running = false;
-            }
-        }
-        firmware_loader_running = false;
-        set_rgb_led_color(DuckColor::Green).await;
-        Timer::after(Duration::from_secs(2)).await;
-    }
-}
 #[embassy_executor::task]
 async fn net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
     loop {
         match WIFI_READY.wait().await {
             wifi_state => match wifi_state {
-                WifiState::connected => {
+                WifiState::Connected => {
                     break;
                 }
-                WifiState::no_connected => {
+                WifiState::NoConnected => {
                     Timer::after(Duration::from_secs(2)).await;
                     continue;
                 }
@@ -566,10 +721,6 @@ async fn net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
         }
     }
     runner.run().await
-}
-
-async fn set_rgb_led_color(color: DuckColor) {
-    CHANGE_LED_COLOR.send(color).await
 }
 
 #[embassy_executor::task]
@@ -616,7 +767,7 @@ async fn initialize_wifi_connection(
             Ok(_) => {
                 set_rgb_led_color(DuckColor::Blue).await;
                 info!("Wifi: connected!");
-                WIFI_READY.signal(WifiState::connected);
+                WIFI_READY.signal(WifiState::Connected);
             }
             Err(e) => {
                 info!("Failed to connect to wifi: {e:?}");
@@ -625,12 +776,9 @@ async fn initialize_wifi_connection(
         }
     }
 }
+
 #[embassy_executor::task]
 async fn rgb_control(rmt: RMT<'static>, gpio8: GPIO8<'static>) {
-    //
-    // RgbLed component
-    //
-    //--------------------------
     let mut rmt_buffer = esp_hal_smartled::smart_led_buffer!(1);
     let mut led = RgbLedComponent::new(rmt, gpio8, &mut rmt_buffer);
 
@@ -640,37 +788,18 @@ async fn rgb_control(rmt: RMT<'static>, gpio8: GPIO8<'static>) {
     }
 }
 
-struct SensorManager<'a> {
-    id: String,
-    sensor: &'a mut dyn Sensor,
-}
-impl<'a> SensorManager<'a> {
-    fn new(sensor: &'a mut dyn Sensor, id: &str) -> Self {
-        Self {
-            id: id.to_owned(),
-            sensor,
-        }
-    }
-    fn get_response(&mut self) -> heapless::String<1024> {
-        let ligth_response: heapless::String<1024> = format!(
-            "<html><head></head><body><p> {}: {} </p></body></html>",
-            self.id,
-            self.sensor.get_info()
-        )
-        .unwrap();
-        http_response(200, "text/html; charset=utf-8", ligth_response.as_str())
-    }
-    fn set_value(&mut self, value: &str) {
-        self.sensor.set_value(value.to_owned());
-    }
+async fn set_rgb_led_color(color: DuckColor) {
+    CHANGE_LED_COLOR.send(color).await
 }
 
+#[allow(dead_code)]
 enum DuckColor {
     Red,
     Green,
     Blue,
     Yellow,
     Pink,
+    Orange,
 }
 struct RgbLedComponent<'ch, Color = Grb<u8>> {
     rgb_led: SmartLedsAdapter<'ch, 25, Color>,
@@ -691,8 +820,6 @@ impl<'ch> RgbLedComponent<'ch, Grb<u8>> {
         }
     }
     fn set_color(&mut self, color: DuckColor, level: u8) {
-        info!("Setting color");
-
         let color = match color {
             DuckColor::Red => smart_leds::hsv::Hsv {
                 hue: 0,
@@ -719,6 +846,11 @@ impl<'ch> RgbLedComponent<'ch, Grb<u8>> {
                 sat: 255,
                 val: 255,
             },
+            DuckColor::Orange => smart_leds::hsv::Hsv {
+                hue: 30,
+                sat: 255,
+                val: 255,
+            },
         };
         let data: rgb::RGB8 = smart_leds::hsv::hsv2rgb(color);
         self.rgb_led
@@ -727,124 +859,5 @@ impl<'ch> RgbLedComponent<'ch, Grb<u8>> {
                 level,
             ))
             .expect("Error al setear el color")
-    }
-}
-
-///
-/// RGB Component
-///
-struct RGBLedComponent<'ch, Color = Grb<u8>> {
-    led: SmartLedsAdapter<'ch, 25, Color>,
-}
-
-impl<'ch> RGBLedComponent<'ch, Grb<u8>> {
-    fn new(rmt: RMT<'ch>, gpio8: GPIO8<'ch>, rmt_buffer: &'ch mut [PulseCode; 25]) -> Self {
-        let rmt: esp_hal::rmt::Rmt<'_, esp_hal::Blocking> = {
-            let frequency: esp_hal::time::Rate = esp_hal::time::Rate::from_mhz(80);
-            esp_hal::rmt::Rmt::new(rmt, frequency)
-        }
-        .expect("Failed to initialize RMT");
-
-        let rmt_channel = rmt.channel0;
-
-        let led = esp_hal_smartled::SmartLedsAdapter::new(rmt_channel, gpio8, rmt_buffer);
-        Self { led }
-    }
-    fn set_color(&mut self, hue: u8, sat: u8, val: u8) {
-        let color = smart_leds::hsv::Hsv { hue, sat, val };
-        let data: rgb::RGB8;
-        let level = 10;
-
-        //color.hue = 247;
-        // // Convert from the HSV color space (where we can easily transition from one
-        // // color to the other) to the RGB color space that we can then send to the LED
-        data = smart_leds::hsv::hsv2rgb(color);
-        // // When sending to the LED, we do a gamma correction first (see smart_leds docs
-        // // for details <https://docs.rs/smart-leds/latest/smart_leds/struct.Gamma.html>)
-        // // and then limit the brightness level to 10 out of 255 so that the output
-        // // is not too bright.
-
-        self.led
-            .write(smart_leds::brightness(
-                smart_leds::gamma([data].into_iter()),
-                level,
-            ))
-            .unwrap();
-    }
-    fn off(&mut self) {
-        let color = smart_leds::hsv::Hsv {
-            hue: 0,
-            sat: 0,
-            val: 0,
-        };
-        let data: rgb::RGB8;
-        let level = 20;
-
-        data = smart_leds::hsv::hsv2rgb(color);
-        self.led
-            .write(smart_leds::brightness(
-                smart_leds::gamma([data].into_iter()),
-                level,
-            ))
-            .unwrap();
-    }
-}
-trait Sensor {
-    fn get_info(&mut self) -> String;
-    fn set_value(&mut self, values: String);
-}
-fn http_response(status: u16, content_type: &str, body: &str) -> heapless::String<1024> {
-    format!(
-        "HTTP/1.1 {} OK\r\n{}Content-Type: {}\r\nContent-Length: {}\r\n\r\n{}",
-        status,
-        cors_headers(),
-        content_type,
-        body.len(),
-        body
-    )
-    .unwrap()
-}
-fn cors_headers() -> &'static str {
-    // Puedes ajustar los valores si quieres restringir orígenes o métodos
-    "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\n"
-}
-impl<'ch> Sensor for RGBLedComponent<'ch> {
-    fn get_info(&mut self) -> String {
-        todo!()
-    }
-
-    fn set_value(&mut self, values: String) {
-        info!("valor: {}", values);
-
-        let mut parts = values.split("&").into_iter();
-        let hue = match parts.next() {
-            Some(path) => path
-                .split("=")
-                .last()
-                .unwrap_or("0")
-                .parse::<u8>()
-                .unwrap_or_default(),
-            None => 0,
-        };
-        let sat = match parts.next() {
-            Some(path) => path
-                .split("=")
-                .last()
-                .unwrap_or("0")
-                .parse::<u8>()
-                .unwrap_or_default(),
-            None => 0,
-        };
-        let val = match parts.next() {
-            Some(path) => path
-                .split("=")
-                .last()
-                .unwrap_or("0")
-                .parse::<u8>()
-                .unwrap_or_default(),
-            None => 0,
-        };
-        info!("Hue{}, sat{}, val{}", hue, sat, val);
-        self.set_color(hue, sat, val);
     }
 }
