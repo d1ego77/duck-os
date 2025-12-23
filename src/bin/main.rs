@@ -5,6 +5,8 @@
     reason = "mem::forget is generally not safe to do with esp_hal types, especially those \
     holding buffers for the duration of a data transfer."
 )]
+mod helpers;
+//mod ota;
 use alloc::string::{String, ToString};
 use bt_hci::controller::ExternalController;
 use core::net::Ipv4Addr;
@@ -14,9 +16,6 @@ use embassy_net::Runner;
 use embassy_net::Stack;
 use embassy_net::driver::Driver;
 use embassy_net::tcp::TcpSocket;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::channel::Channel;
-use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Timer};
 use embedded_io_async::{Read, Write};
 use embedded_storage::Storage;
@@ -39,6 +38,11 @@ use rgb::Grb;
 use smart_leds::SmartLedsWrite;
 use trouble_host::prelude::*;
 
+use crate::helpers::CHANGE_LED_COLOR;
+use crate::helpers::DuckColor;
+use crate::helpers::set_rgb_led_color;
+use crate::helpers::{DuckError, DuckResult, WIFI_READY, WifiState};
+
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     loop {}
@@ -55,24 +59,15 @@ macro_rules! mk_static {
     }};
 }
 
-const CURRENT_VERSION: &str = "1.0.15";
+const CURRENT_VERSION: &str = "1.0.20";
 const FIRMWARE_FILE_NAME: &str = "duck-firmware.bin";
 const VERSION_FILE_NAME: &str = "version.json";
-const FIRMWARE_HOST: &str = "http://192.168.100.56:80";
+const FIRMWARE_HOST: &str = "http://192.168.100.185:80";
 const WIFI_NAME: &str = "Diego";
 const WIFI_PASSWORD: &str = "Diego777";
 
 const CONNECTIONS_MAX: usize = 1;
 const L2CAP_CHANNELS_MAX: usize = 1;
-
-static WIFI_READY: Signal<CriticalSectionRawMutex, WifiState> = Signal::new();
-static CHANGE_LED_COLOR: Channel<CriticalSectionRawMutex, DuckColor, 4> = Channel::new();
-
-#[allow(dead_code)]
-enum WifiState {
-    Connected,
-    NoConnected,
-}
 
 struct NetworkConfiguration<D>
 where
@@ -129,7 +124,7 @@ async fn main(spawner: Spawner) -> ! {
         .spawn(rgb_control(peripherals.RMT, peripherals.GPIO8))
         .ok();
 
-    // Initialize wifi service|
+    // Initialize wifi service
     spawner
         .spawn(initialize_wifi_connection(
             wifi_controller,
@@ -144,7 +139,7 @@ async fn main(spawner: Spawner) -> ! {
         seed: generate_seed(),
     };
 
-    // Initialize  network connection|
+    // Initialize  network connection
     let (stack, runner) = build_network(network_config);
     spawner.spawn(net_task(runner)).ok();
 
@@ -288,9 +283,6 @@ impl<'a> DuckFirmware<'a> {
             .await
             .map_err(|_| DuckError::NetworkError)?;
 
-        /* -------------------------------------------------
-         * 1️⃣ Saltar headers HTTP
-         * ------------------------------------------------- */
         let mut buf = [0u8; 1];
         let mut last = [0u8; 4];
 
@@ -308,9 +300,7 @@ impl<'a> DuckFirmware<'a> {
             }
         }
 
-        /* -------------------------------------------------
-         * 2️⃣ Leer body (JSON)
-         * ------------------------------------------------- */
+        // Read json body
         let mut body = [0u8; 128];
         let mut len = 0;
 
@@ -622,7 +612,7 @@ where
 
             offset += payload.len() as u32;
 
-            // ✅ Dejar respirar la pila TCP (OBLIGATORIO)
+            //wait before write continue
             embassy_time::Timer::after_millis(1).await;
         }
         info!("Descarga finalizada: {} bytes", offset);
@@ -668,62 +658,12 @@ where
     }
 }
 
-#[derive(Debug)]
-enum DuckError {
-    NetworkError,
-}
 #[allow(dead_code)]
 fn handle_error(error: &DuckError) {
     match error {
         DuckError::NetworkError => defmt::error!("Network error ocurred."),
     }
 }
-
-type DuckResult<T> = core::result::Result<T, DuckError>;
-
-//#[allow(dead_code)]
-// async fn check_firmware_server_connection<'a>(
-//     socket: &'a mut TcpSocket<'a>,
-//     host: &'a str,
-//     path: &'a str,
-// ) -> DuckResult<&'a mut TcpSocket<'a>> {
-//     let request_str = format!(
-//         "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
-//         path, host
-//     );
-
-//     let request: heapless::String<1024> = if let Ok(request_str) = request_str {
-//         request_str
-//     } else {
-//         return Err(DuckError::NetworkError);
-//     };
-
-//     match socket.write_all(request.as_bytes()).await {
-//         Ok(_) => {
-//             let mut buf = [0u8; 1];
-//             let mut last = [0u8; 4];
-
-//             loop {
-//                 match socket.read_exact(&mut buf).await {
-//                     Ok(_) => {
-//                         // Saltar headers
-//                         last.rotate_left(1);
-//                         last[3] = buf[0];
-//                         if &last == b"\r\n\r\n" {
-//                             break;
-//                         }
-//                     }
-//                     Err(_) => {
-//                         return Err(DuckError::NetworkError);
-//                     }
-//                 };
-//             }
-//         }
-//         Err(_) => return Err(DuckError::NetworkError),
-//     };
-
-//     Ok(socket)
-// }
 
 #[embassy_executor::task]
 async fn net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
@@ -808,20 +748,6 @@ async fn rgb_control(rmt: RMT<'static>, gpio8: GPIO8<'static>) {
     }
 }
 
-async fn set_rgb_led_color(color: DuckColor) {
-    CHANGE_LED_COLOR.send(color).await
-}
-
-#[allow(dead_code)]
-enum DuckColor {
-    Red,
-    Green,
-    Blue,
-    Yellow,
-    Pink,
-    Orange,
-    None,
-}
 struct RgbLedComponent<'ch, Color = Grb<u8>> {
     rgb_led: SmartLedsAdapter<'ch, 25, Color>,
 }
