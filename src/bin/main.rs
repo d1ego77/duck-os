@@ -5,7 +5,6 @@
     reason = "mem::forget is generally not safe to do with esp_hal types, especially those \
     holding buffers for the duration of a data transfer."
 )]
-use alloc::borrow::ToOwned;
 use alloc::string::{String, ToString};
 use bt_hci::controller::ExternalController;
 use core::net::Ipv4Addr;
@@ -56,10 +55,10 @@ macro_rules! mk_static {
     }};
 }
 
-const CURRENT_VERSION: &str = "1.0.5";
+const CURRENT_VERSION: &str = "1.0.15";
 const FIRMWARE_FILE_NAME: &str = "duck-firmware.bin";
 const VERSION_FILE_NAME: &str = "version.json";
-const FIRMWARE_HOST: &str = "http://192.168.100.185:80";
+const FIRMWARE_HOST: &str = "http://192.168.100.56:80";
 const WIFI_NAME: &str = "Diego";
 const WIFI_PASSWORD: &str = "Diego777";
 
@@ -108,10 +107,6 @@ async fn main(spawner: Spawner) -> ! {
     info!("Embassy initialized!");
     info!("Current Version: {}", get_current_version());
 
-    spawner
-        .spawn(rgb_control(peripherals.RMT, peripherals.GPIO8))
-        .ok();
-
     let radio_init = &*mk_static!(
         esp_radio::Controller<'static>,
         esp_radio::init().expect("Failed to initialize Wi-Fi/BLE controller")
@@ -129,6 +124,10 @@ async fn main(spawner: Spawner) -> ! {
         HostResources::new();
 
     let _stack = trouble_host::new(ble_controller, &mut resources);
+
+    spawner
+        .spawn(rgb_control(peripherals.RMT, peripherals.GPIO8))
+        .ok();
 
     // Initialize wifi service|
     spawner
@@ -175,7 +174,6 @@ async fn main(spawner: Spawner) -> ! {
 #[embassy_executor::task]
 async fn firmware_update_task(mut duck_firmware: DuckFirmware<'static>) {
     duck_firmware.update_firmware().await;
-
 }
 struct DuckFirmware<'a> {
     boot_button: esp_hal::gpio::Input<'a>,
@@ -206,24 +204,32 @@ impl<'a> DuckFirmware<'a> {
     }
     async fn update_firmware(&mut self) {
         loop {
-            if !self.boot_button.is_low(){
+            if !self.boot_button.is_low() {
                 info!("cheking {}", self.boot_button.is_low());
                 Timer::after(Duration::from_secs(5)).await;
                 continue;
             } else {
+                set_rgb_led_color(DuckColor::Red).await;
+                Timer::after(Duration::from_secs(1)).await;
                 match self.get_server_framework_version().await {
                     Ok(version) => {
-                        info!("New version: {} - Current Version:{}", version, CURRENT_VERSION);
-                        Timer::after(Duration::from_secs(20)).await;
+                        info!(
+                            "New version: {} - Current Version:{}",
+                            version, CURRENT_VERSION
+                        );
                         if is_newer(version.as_str(), CURRENT_VERSION) {
                             self.write_new_firmware().await;
+                        } else {
+                            set_rgb_led_color(DuckColor::Green).await;
                         }
-                    },
+                    }
                     Err(_) => {
                         info!("Fail to get server version");
                     }
                 }
             }
+
+            Timer::after(Duration::from_secs(2)).await;
         }
     }
     #[allow(unused_assignments)]
@@ -324,9 +330,11 @@ impl<'a> DuckFirmware<'a> {
         let version_str =
             core::str::from_utf8(&body[..len]).map_err(|_| DuckError::NetworkError)?;
 
-        info!("response body: {}", version_str);
-
-        Ok(version_str.to_string())
+        let version = match extract_version(version_str) {
+            Some(version) => version.to_string(),
+            None => "0.0.0".to_string(),
+        };
+        Ok(version)
     }
     fn get_remote_endpoint(&self) -> Option<(Ipv4Addr, u16)> {
         match self.host.strip_prefix("http://") {
@@ -363,6 +371,18 @@ impl<'a> DuckFirmware<'a> {
             }
         }
     }
+}
+
+fn extract_version(json: &str) -> Option<heapless::String<16>> {
+    let key = "\"version\"";
+    let start = json.find(key)? + key.len();
+    let start = json[start..].find('"')? + start + 1;
+    let end = json[start..].find('"')? + start;
+
+    let mut version = heapless::String::<16>::new();
+    version.push_str(&json[start..end]).ok()?;
+
+    Some(version)
 }
 
 fn parse_version(v: &str) -> Option<(u8, u8, u8)> {
@@ -409,7 +429,7 @@ async fn wait_for_network_ip<'a>(stack: Stack<'a>) {
     loop {
         if let Some(config) = stack.config_v4() {
             info!("Got IP: {}", config.address);
-            set_rgb_led_color(DuckColor::Orange).await;
+            set_rgb_led_color(DuckColor::Green).await;
             break;
         }
         Timer::after(Duration::from_millis(500)).await;
@@ -800,6 +820,7 @@ enum DuckColor {
     Yellow,
     Pink,
     Orange,
+    None,
 }
 struct RgbLedComponent<'ch, Color = Grb<u8>> {
     rgb_led: SmartLedsAdapter<'ch, 25, Color>,
@@ -850,6 +871,11 @@ impl<'ch> RgbLedComponent<'ch, Grb<u8>> {
                 hue: 30,
                 sat: 255,
                 val: 255,
+            },
+            DuckColor::None => smart_leds::hsv::Hsv {
+                hue: 0,
+                sat: 0,
+                val: 0,
             },
         };
         let data: rgb::RGB8 = smart_leds::hsv::hsv2rgb(color);
