@@ -2,7 +2,9 @@ use embassy_sync::{
     blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel, signal::Signal,
 };
 
+// Signal to notify wifi initialization is ready
 pub static WIFI_READY: Signal<CriticalSectionRawMutex, WifiState> = Signal::new();
+// Signal to nitify change color of rgb led
 pub static CHANGE_LED_COLOR: Channel<CriticalSectionRawMutex, DuckColor, 4> = Channel::new();
 
 pub async fn set_rgb_led_color(color: DuckColor) {
