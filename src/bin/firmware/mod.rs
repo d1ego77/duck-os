@@ -10,7 +10,10 @@ use heapless::format;
 
 use crate::{
     CURRENT_VERSION,
-    helpers::{DuckError, DuckResult, RgbColor, extract_version, is_newer, set_rgb_led_color},
+    helpers::{
+        DuckError, DuckResult, RgbColor, extract_version, is_newer, set_rgb_led_color,
+        set_rgb_led_online,
+    },
     ota::{Ota, OtaHttpUpdater},
 };
 
@@ -59,7 +62,7 @@ impl<'a> DuckFirmware<'a> {
                         if is_newer(version.as_str(), CURRENT_VERSION) {
                             self.write_new_firmware().await;
                         } else {
-                            set_rgb_led_color(RgbColor::White).await;
+                            set_rgb_led_online().await;
                         }
                     }
                     Err(_) => {
@@ -98,7 +101,7 @@ impl<'a> DuckFirmware<'a> {
                 info!("Fail to build OTA");
             }
         }
-        set_rgb_led_color(RgbColor::White).await;
+        set_rgb_led_online().await;
         Timer::after(Duration::from_secs(2)).await;
     }
     async fn get_server_framework_version(&mut self) -> DuckResult<String> {

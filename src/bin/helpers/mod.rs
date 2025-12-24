@@ -13,6 +13,10 @@ pub async fn set_rgb_led_color(color: RgbColor) {
     CHANGE_LED_COLOR.send(color).await
 }
 
+pub async fn set_rgb_led_online() {
+    CHANGE_LED_COLOR.send(RgbColor::Green).await;
+}
+
 // Preconfigured rgb led colors
 #[allow(dead_code)]
 pub enum RgbColor {

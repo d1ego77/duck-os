@@ -32,6 +32,7 @@ use crate::firmware::DuckFirmware;
 use crate::helpers::CHANGE_LED_COLOR;
 use crate::helpers::RgbColor;
 use crate::helpers::set_rgb_led_color;
+use crate::helpers::set_rgb_led_online;
 use crate::helpers::{WIFI_READY, WifiState};
 use crate::rgb_led::RgbLedComponent;
 
@@ -51,7 +52,7 @@ macro_rules! mk_static {
     }};
 }
 
-const CURRENT_VERSION: &str = "1.0.30";
+const CURRENT_VERSION: &str = "1.0.31";
 const FIRMWARE_FILE_NAME: &str = "duck-firmware.bin";
 const VERSION_FILE_NAME: &str = "version.json";
 const FIRMWARE_HOST: &str = "http://192.168.100.185:80";
@@ -274,7 +275,7 @@ async fn wait_for_network_ip<'a>(stack: Stack<'a>) {
     loop {
         if let Some(config) = stack.config_v4() {
             info!("Got IP: {}", config.address);
-            set_rgb_led_color(RgbColor::White).await;
+            set_rgb_led_online().await;
             break;
         }
         Timer::after(Duration::from_millis(500)).await;
