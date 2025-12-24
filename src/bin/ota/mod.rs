@@ -1,13 +1,18 @@
-use alloc::string::ToString;
+use core::net::Ipv4Addr;
+
+use alloc::string::{String, ToString};
 use defmt::info;
+use embassy_net::tcp::TcpSocket;
 use embassy_time::{Duration, Timer};
-use embedded_io_async::Read;
+use embedded_io_async::{Read, Write};
 use esp_bootloader_esp_idf::{ota_updater::OtaUpdater, partitions::FlashRegion};
 
-use crate::helpers::{DuckError, DuckResult};
+use crate::helpers::{DuckError, DuckResult, RgbColor, set_rgb_led_color};
 use embedded_storage::Storage;
 
-struct Ota<'a, F>
+use heapless::format;
+
+pub struct Ota<'a, F>
 where
     F: embedded_storage::Storage,
 {
@@ -18,7 +23,7 @@ impl<'a, F> Ota<'a, F>
 where
     F: embedded_storage::Storage,
 {
-    fn new(
+    pub fn new(
         storage: &'a mut F,
         buffer: &'a mut [u8; esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN],
     ) -> DuckResult<Self> {
@@ -31,7 +36,7 @@ where
         };
         Ok(Self { updater })
     }
-    async fn load_firmware_in_next_partition<'p, R>(
+    pub async fn load_firmware_in_next_partition<'p, R>(
         stream: &mut R,
         mut partition: FlashRegion<'p, F>,
     ) where
@@ -76,7 +81,7 @@ where
         }
         info!("Descarga finalizada: {} bytes", offset);
     }
-    async fn write_firmware<R>(mut self, firmware_stream: &mut R)
+    pub async fn write_firmware<R>(mut self, firmware_stream: &mut R)
     where
         R: Read,
     {
@@ -109,10 +114,121 @@ where
             .set_current_ota_state(esp_bootloader_esp_idf::ota::OtaImageState::New)
             .unwrap();
 
-        set_rgb_led_color(DuckColor::Blue).await;
+        set_rgb_led_color(RgbColor::Blue).await;
         info!("Reiniciando...");
         Timer::after(Duration::from_secs(5)).await;
 
         esp_hal::rom::software_reset();
+    }
+}
+pub struct OtaHttpUpdater<'a, F>
+where
+    F: embedded_storage::Storage,
+{
+    ota: Ota<'a, F>,
+    socket: TcpSocket<'a>,
+    host: String,
+    path: String,
+}
+impl<'a, F> OtaHttpUpdater<'a, F>
+where
+    F: embedded_storage::Storage,
+{
+    pub fn new(ota: Ota<'a, F>, socket: TcpSocket<'a>, host: &str, path: &str) -> Self {
+        Self {
+            ota,
+            socket,
+            host: host.into(),
+            path: path.into(),
+        }
+    }
+    pub async fn update_firmware(mut self) {
+        self.ota.write_firmware(&mut self.socket).await;
+    }
+    fn get_remote_endpoint(&self) -> Option<(Ipv4Addr, u16)> {
+        match self.host.strip_prefix("http://") {
+            Some(s) => {
+                match s.split_once(':') {
+                    Some((ip, port)) => {
+                        let mut octets = [0u8; 4];
+                        let mut i = 0;
+                        for part in ip.split('.') {
+                            if i >= 4 {
+                                return None;
+                            }
+                            octets[i] = part.parse().ok()?;
+                            i += 1;
+                        }
+                        if i != 4 {
+                            return None;
+                        }
+                        // parsear puerto
+                        let port = match port.parse().ok() {
+                            Some(port) => port,
+                            None => 0,
+                        };
+                        let [a, b, c, d] = octets;
+                        Some((core::net::Ipv4Addr::new(a, b, c, d), port))
+                    }
+                    None => {
+                        return None;
+                    }
+                }
+            }
+            None => {
+                return None;
+            }
+        }
+    }
+    pub async fn check_firmware_server_connection(mut self) -> DuckResult<Self> {
+        let request_str = format!(
+            "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+            self.path, self.host
+        );
+        self.socket.set_keep_alive(Some(Duration::from_secs(15)));
+
+        info!("connecting...");
+        if let Some(remote_endpoint) = self.get_remote_endpoint() {
+            if let Err(e) = self.socket.connect(remote_endpoint).await {
+                info!("connect error: {:?}", e);
+                return Err(DuckError::NetworkError);
+            }
+        } else {
+            info!("fail to get remote endpoint information error");
+            return Err(DuckError::NetworkError);
+        }
+
+        let request: heapless::String<1024> = if let Ok(request_str) = request_str {
+            request_str
+        } else {
+            info!("Fail heapless string conversion");
+            return Err(DuckError::NetworkError);
+        };
+
+        match self.socket.write_all(request.as_bytes()).await {
+            Ok(_) => {
+                let mut buf = [0u8; 1];
+                let mut last = [0u8; 4];
+
+                loop {
+                    match self.socket.read_exact(&mut buf).await {
+                        Ok(_) => {
+                            // Saltar headers
+                            last.rotate_left(1);
+                            last[3] = buf[0];
+                            if &last == b"\r\n\r\n" {
+                                break;
+                            }
+                        }
+                        Err(_) => {
+                            return Err(DuckError::NetworkError);
+                        }
+                    };
+                }
+            }
+            Err(_) => return Err(DuckError::NetworkError),
+        };
+
+        Ok(self)
     }
 }

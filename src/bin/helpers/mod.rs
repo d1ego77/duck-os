@@ -23,6 +23,7 @@ pub enum RgbColor {
     Pink,
     Orange,
     Gray,
+    White,
     None,
 }
 
@@ -37,4 +38,43 @@ pub type DuckResult<T> = core::result::Result<T, DuckError>;
 pub enum WifiState {
     Connected,
     NoConnected,
+}
+
+pub fn generate_seed() -> u64 {
+    let rng = esp_hal::rng::Rng::new();
+    (rng.random() as u64) << 32 | rng.random() as u64
+}
+pub fn extract_version(json: &str) -> Option<heapless::String<16>> {
+    let key = "\"version\"";
+    let start = json.find(key)? + key.len();
+    let start = json[start..].find('"')? + start + 1;
+    let end = json[start..].find('"')? + start;
+
+    let mut version = heapless::String::<16>::new();
+    version.push_str(&json[start..end]).ok()?;
+
+    Some(version)
+}
+
+pub fn parse_version(v: &str) -> Option<(u8, u8, u8)> {
+    let mut it = v.trim().split('.');
+    Some((
+        it.next()?.parse().ok()?,
+        it.next()?.parse().ok()?,
+        it.next()?.parse().ok()?,
+    ))
+}
+
+pub fn is_newer(remote: &str, local: &str) -> bool {
+    match (parse_version(remote), parse_version(local)) {
+        (Some(r), Some(l)) => r > l,
+        _ => false,
+    }
+}
+
+#[allow(dead_code)]
+fn handle_error(error: &DuckError) {
+    match error {
+        DuckError::NetworkError => defmt::error!("Network error ocurred."),
+    }
 }
