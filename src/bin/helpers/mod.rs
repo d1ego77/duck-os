@@ -4,21 +4,25 @@ use embassy_sync::{
 
 // Signal to notify wifi initialization is ready
 pub static WIFI_READY: Signal<CriticalSectionRawMutex, WifiState> = Signal::new();
-// Signal to nitify change color of rgb led
-pub static CHANGE_LED_COLOR: Channel<CriticalSectionRawMutex, DuckColor, 4> = Channel::new();
 
-pub async fn set_rgb_led_color(color: DuckColor) {
+// Signal to nitify change color of rgb led
+pub static CHANGE_LED_COLOR: Channel<CriticalSectionRawMutex, RgbColor, 4> = Channel::new();
+
+// Send the signal to change the led color
+pub async fn set_rgb_led_color(color: RgbColor) {
     CHANGE_LED_COLOR.send(color).await
 }
 
+// Preconfigured rgb led colors
 #[allow(dead_code)]
-pub enum DuckColor {
+pub enum RgbColor {
     Red,
     Green,
     Blue,
     Yellow,
     Pink,
     Orange,
+    Gray,
     None,
 }
 

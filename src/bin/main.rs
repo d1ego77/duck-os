@@ -39,7 +39,7 @@ use smart_leds::SmartLedsWrite;
 use trouble_host::prelude::*;
 
 use crate::helpers::CHANGE_LED_COLOR;
-use crate::helpers::DuckColor;
+use crate::helpers::RgbColor;
 use crate::helpers::set_rgb_led_color;
 use crate::helpers::{DuckError, DuckResult, WIFI_READY, WifiState};
 
@@ -59,10 +59,10 @@ macro_rules! mk_static {
     }};
 }
 
-const CURRENT_VERSION: &str = "1.0.20";
+const CURRENT_VERSION: &str = "1.0.25";
 const FIRMWARE_FILE_NAME: &str = "duck-firmware.bin";
 const VERSION_FILE_NAME: &str = "version.json";
-const FIRMWARE_HOST: &str = "http://192.168.100.185:80";
+const FIRMWARE_HOST: &str = "http://192.168.100.56:80";
 const WIFI_NAME: &str = "Diego";
 const WIFI_PASSWORD: &str = "Diego777";
 
@@ -204,7 +204,7 @@ impl<'a> DuckFirmware<'a> {
                 Timer::after(Duration::from_secs(5)).await;
                 continue;
             } else {
-                set_rgb_led_color(DuckColor::Red).await;
+                set_rgb_led_color(RgbColor::Red).await;
                 Timer::after(Duration::from_secs(1)).await;
                 match self.get_server_framework_version().await {
                     Ok(version) => {
@@ -215,7 +215,7 @@ impl<'a> DuckFirmware<'a> {
                         if is_newer(version.as_str(), CURRENT_VERSION) {
                             self.write_new_firmware().await;
                         } else {
-                            set_rgb_led_color(DuckColor::Green).await;
+                            set_rgb_led_color(RgbColor::Orange).await;
                         }
                     }
                     Err(_) => {
@@ -233,7 +233,7 @@ impl<'a> DuckFirmware<'a> {
         let mut rx_buffer = [0; 4096];
         let mut tx_buffer = [0; 4096];
 
-        set_rgb_led_color(DuckColor::Pink).await;
+        set_rgb_led_color(RgbColor::Pink).await;
         Timer::after(Duration::from_secs(2)).await;
         info!("Name: {}", self.host);
         info!("Path: {}", self.path);
@@ -253,7 +253,7 @@ impl<'a> DuckFirmware<'a> {
                 info!("Fail to build OTA");
             }
         }
-        set_rgb_led_color(DuckColor::Green).await;
+        set_rgb_led_color(RgbColor::Orange).await;
         Timer::after(Duration::from_secs(2)).await;
     }
     async fn get_server_framework_version(&mut self) -> DuckResult<String> {
@@ -414,12 +414,12 @@ async fn wait_for_network_connection<'a>(stack: Stack<'a>) {
     }
 }
 async fn wait_for_network_ip<'a>(stack: Stack<'a>) {
-    set_rgb_led_color(DuckColor::Pink).await;
+    set_rgb_led_color(RgbColor::Pink).await;
     info!("Waiting to get IP address...");
     loop {
         if let Some(config) = stack.config_v4() {
             info!("Got IP: {}", config.address);
-            set_rgb_led_color(DuckColor::Green).await;
+            set_rgb_led_color(RgbColor::Orange).await;
             break;
         }
         Timer::after(Duration::from_millis(500)).await;
@@ -650,7 +650,7 @@ where
             .set_current_ota_state(esp_bootloader_esp_idf::ota::OtaImageState::New)
             .unwrap();
 
-        set_rgb_led_color(DuckColor::Blue).await;
+        set_rgb_led_color(RgbColor::Blue).await;
         info!("Reiniciando...");
         Timer::after(Duration::from_secs(5)).await;
 
@@ -689,7 +689,7 @@ async fn initialize_wifi_connection(
     wifi_name: &'static str,
     password: &'static str,
 ) {
-    set_rgb_led_color(DuckColor::Red).await;
+    set_rgb_led_color(RgbColor::Red).await;
     info!("Device capabilities: {:?}", controller.capabilities());
     loop {
         match esp_radio::wifi::sta_state() {
@@ -725,7 +725,7 @@ async fn initialize_wifi_connection(
 
         match controller.connect_async().await {
             Ok(_) => {
-                set_rgb_led_color(DuckColor::Blue).await;
+                set_rgb_led_color(RgbColor::Blue).await;
                 info!("Wifi: connected!");
                 WIFI_READY.signal(WifiState::Connected);
             }
@@ -766,39 +766,44 @@ impl<'ch> RgbLedComponent<'ch, Grb<u8>> {
             rgb_led: SmartLedsAdapter::new(rmt.channel0, gpio8, rmt_buffer),
         }
     }
-    fn set_color(&mut self, color: DuckColor, level: u8) {
+    fn set_color(&mut self, color: RgbColor, level: u8) {
         let color = match color {
-            DuckColor::Red => smart_leds::hsv::Hsv {
+            RgbColor::Red => smart_leds::hsv::Hsv {
                 hue: 0,
                 sat: 255,
                 val: 255,
             },
-            DuckColor::Green => smart_leds::hsv::Hsv {
+            RgbColor::Green => smart_leds::hsv::Hsv {
                 hue: 87,
                 sat: 255,
                 val: 255,
             },
-            DuckColor::Blue => smart_leds::hsv::Hsv {
+            RgbColor::Blue => smart_leds::hsv::Hsv {
                 hue: 191,
                 sat: 255,
                 val: 255,
             },
-            DuckColor::Yellow => smart_leds::hsv::Hsv {
+            RgbColor::Yellow => smart_leds::hsv::Hsv {
                 hue: 45,
                 sat: 255,
                 val: 255,
             },
-            DuckColor::Pink => smart_leds::hsv::Hsv {
+            RgbColor::Pink => smart_leds::hsv::Hsv {
                 hue: 213,
                 sat: 255,
                 val: 255,
             },
-            DuckColor::Orange => smart_leds::hsv::Hsv {
+            RgbColor::Gray => smart_leds::hsv::Hsv {
+                hue: 0,
+                sat: 0,
+                val: 128,
+            },
+            RgbColor::Orange => smart_leds::hsv::Hsv {
                 hue: 30,
                 sat: 255,
                 val: 255,
             },
-            DuckColor::None => smart_leds::hsv::Hsv {
+            RgbColor::None => smart_leds::hsv::Hsv {
                 hue: 0,
                 sat: 0,
                 val: 0,
