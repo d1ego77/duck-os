@@ -52,12 +52,12 @@ macro_rules! mk_static {
     }};
 }
 
-const CURRENT_VERSION: &str = "1.0.31";
+const CURRENT_VERSION: &str = "1.0.34";
 const FIRMWARE_FILE_NAME: &str = "duck-firmware.bin";
 const VERSION_FILE_NAME: &str = "version.json";
-const FIRMWARE_HOST: &str = "http://192.168.100.185:80";
-const WIFI_NAME: &str = "Diego";
-const WIFI_PASSWORD: &str = "Diego777";
+const FIRMWARE_HOST: &str = "http://192.168.100.39:80";
+const WIFI_NAME: &str = "Familia 05_EXT";
+const WIFI_PASSWORD: &str = "FAS12345";
 
 const CONNECTIONS_MAX: usize = 1;
 const L2CAP_CHANNELS_MAX: usize = 1;

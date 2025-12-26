@@ -46,11 +46,11 @@ impl<'a> DuckFirmware<'a> {
     }
     pub async fn update_firmware(&mut self) {
         loop {
-            if !self.boot_button.is_low() {
-                info!("cheking {}", self.boot_button.is_low());
-                Timer::after(Duration::from_secs(5)).await;
-                continue;
-            } else {
+        //     if !self.boot_button.is_low() {
+        //         info!("cheking {}", self.boot_button.is_low());
+        //         Timer::after(Duration::from_secs(5)).await;
+        //         continue;
+        //     } else {
                 set_rgb_led_color(RgbColor::Red).await;
                 Timer::after(Duration::from_secs(1)).await;
                 match self.get_server_framework_version().await {
@@ -69,9 +69,9 @@ impl<'a> DuckFirmware<'a> {
                         info!("Fail to get server version");
                     }
                 }
-            }
+            // }
 
-            Timer::after(Duration::from_secs(2)).await;
+            Timer::after(Duration::from_secs(7)).await;
         }
     }
 

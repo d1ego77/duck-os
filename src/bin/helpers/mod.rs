@@ -14,7 +14,7 @@ pub async fn set_rgb_led_color(color: RgbColor) {
 }
 
 pub async fn set_rgb_led_online() {
-    CHANGE_LED_COLOR.send(RgbColor::Green).await;
+    CHANGE_LED_COLOR.send(RgbColor::Pink).await;
 }
 
 // Preconfigured rgb led colors
