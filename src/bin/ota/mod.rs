@@ -7,7 +7,10 @@ use embassy_time::{Duration, Timer};
 use embedded_io_async::{Read, Write};
 use esp_bootloader_esp_idf::{ota_updater::OtaUpdater, partitions::FlashRegion};
 
-use crate::helpers::{DuckError, DuckResult, RgbColor, set_rgb_led_color};
+use crate::{
+    helpers::{DuckError, DuckResult, RgbColor},
+    rgb_led::set_rgb_led_color,
+};
 use embedded_storage::Storage;
 
 use heapless::format;

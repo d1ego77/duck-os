@@ -10,11 +10,9 @@ use heapless::format;
 
 use crate::{
     CURRENT_VERSION,
-    helpers::{
-        DuckError, DuckResult, RgbColor, extract_version, is_newer, set_rgb_led_color,
-        set_rgb_led_online,
-    },
+    helpers::{DuckError, DuckResult, RgbColor, extract_version, is_newer},
     ota::{Ota, OtaHttpUpdater},
+    rgb_led::{set_rgb_led_color, set_rgb_led_online},
 };
 
 pub struct DuckFirmware<'a> {
@@ -46,32 +44,32 @@ impl<'a> DuckFirmware<'a> {
     }
     pub async fn update_firmware(&mut self) {
         loop {
-        //     if !self.boot_button.is_low() {
-        //         info!("cheking {}", self.boot_button.is_low());
-        //         Timer::after(Duration::from_secs(5)).await;
-        //         continue;
-        //     } else {
-                set_rgb_led_color(RgbColor::Red).await;
-                Timer::after(Duration::from_secs(1)).await;
-                match self.get_server_framework_version().await {
-                    Ok(version) => {
-                        info!(
-                            "New version: {} - Current Version:{}",
-                            version, CURRENT_VERSION
-                        );
-                        if is_newer(version.as_str(), CURRENT_VERSION) {
-                            self.write_new_firmware().await;
-                        } else {
-                            set_rgb_led_online().await;
-                        }
-                    }
-                    Err(_) => {
-                        info!("Fail to get server version");
+            //     if !self.boot_button.is_low() {
+            //         info!("cheking {}", self.boot_button.is_low());
+            //         Timer::after(Duration::from_secs(5)).await;
+            //         continue;
+            //     } else {
+            set_rgb_led_color(RgbColor::Red).await;
+            Timer::after(Duration::from_secs(1)).await;
+            match self.get_server_framework_version().await {
+                Ok(version) => {
+                    info!(
+                        "New version: {} - Current Version:{}",
+                        version, CURRENT_VERSION
+                    );
+                    if is_newer(version.as_str(), CURRENT_VERSION) {
+                        self.write_new_firmware().await;
+                    } else {
+                        set_rgb_led_online().await;
                     }
                 }
+                Err(_) => {
+                    info!("Fail to get server version");
+                }
+            }
             // }
 
-            Timer::after(Duration::from_secs(7)).await;
+            Timer::after(Duration::from_secs(20)).await;
         }
     }
 

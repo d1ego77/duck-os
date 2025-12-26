@@ -3,8 +3,19 @@ use esp_hal::rmt::PulseCode;
 use esp_hal_smartled::SmartLedsAdapter;
 use smart_leds::SmartLedsWrite;
 
-use crate::helpers::RgbColor;
 use rgb::Grb;
+
+use crate::channel::CHANGE_LED_COLOR;
+use crate::helpers::RgbColor;
+
+// Send the signal to change the led color
+pub async fn set_rgb_led_color(color: RgbColor) {
+    CHANGE_LED_COLOR.send(color).await
+}
+
+pub async fn set_rgb_led_online() {
+    CHANGE_LED_COLOR.send(RgbColor::White).await;
+}
 
 pub struct RgbLedComponent<'ch, Color = Grb<u8>> {
     rgb_led: SmartLedsAdapter<'ch, 25, Color>,
