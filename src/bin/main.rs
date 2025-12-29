@@ -28,6 +28,7 @@ use trouble_host::prelude::*;
 use crate::channel::CHANGE_LED_COLOR;
 use crate::firmware::DuckFirmware;
 use crate::rgb_led::RgbLedComponent;
+use crate::rgb_led::breath;
 use crate::rgb_led::set_rgb_led_offline;
 use crate::wifi::NetworkConnection;
 use crate::wifi::Wifi;
@@ -39,10 +40,10 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 
 extern crate alloc;
 
-const CURRENT_VERSION: &str = "1.0.41";
+const CURRENT_VERSION: &str = "1.0.44";
 const FIRMWARE_FILE_NAME: &str = "duck-firmware.bin";
 const VERSION_FILE_NAME: &str = "version.json";
-const FIRMWARE_HOST: &str = "http://192.168.100.56:80";
+const FIRMWARE_HOST: &str = "http://192.168.100.185:80";
 const WIFI_NAME: &str = "Diego";
 const WIFI_PASSWORD: &str = "Diego777";
 
@@ -119,13 +120,17 @@ async fn main(spawner: Spawner) -> ! {
         VERSION_FILE_NAME,
     );
     spawner.spawn(firmware_update_task(duck_firmware)).ok();
-
+    spawner.spawn(breath_task()).ok();
     loop {
         info!("running...");
         Timer::after(Duration::from_secs(5)).await;
     }
 }
 
+#[embassy_executor::task]
+async fn breath_task() {
+    breath().await;
+}
 #[embassy_executor::task]
 async fn firmware_update_task(mut duck_firmware: DuckFirmware<'static>) {
     duck_firmware.update_firmware().await;

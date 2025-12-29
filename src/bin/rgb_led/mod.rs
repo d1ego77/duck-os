@@ -1,3 +1,4 @@
+use embassy_time::{Duration, Timer};
 use esp_hal::peripherals::{GPIO8, RMT};
 use esp_hal::rmt::PulseCode;
 use esp_hal_smartled::SmartLedsAdapter;
@@ -23,6 +24,23 @@ pub async fn set_rgb_led_offline() {
 
 pub async fn set_rgb_led_online() {
     CHANGE_LED_COLOR.send(RgbColor::Burgundy).await;
+}
+
+pub async fn breath() {
+    loop {
+        CHANGE_LED_COLOR.send(RgbColor::Blue).await;
+        Timer::after(Duration::from_secs(1)).await;
+        CHANGE_LED_COLOR.send(RgbColor::Red).await;
+        Timer::after(Duration::from_secs(1)).await;
+        CHANGE_LED_COLOR.send(RgbColor::Green).await;
+        Timer::after(Duration::from_secs(1)).await;
+        CHANGE_LED_COLOR.send(RgbColor::Yellow).await;
+        Timer::after(Duration::from_secs(1)).await;
+        CHANGE_LED_COLOR.send(RgbColor::Pink).await;
+        Timer::after(Duration::from_secs(1)).await;
+        CHANGE_LED_COLOR.send(RgbColor::White).await;
+        Timer::after(Duration::from_secs(1)).await;
+    }
 }
 
 pub struct RgbLedComponent<'ch, Color = Grb<u8>> {
@@ -51,9 +69,9 @@ impl<'ch> RgbLedComponent<'ch, Grb<u8>> {
                 val: 255,
             },
             RgbColor::Burgundy => smart_leds::hsv::Hsv {
-                hue: 240,
+                hue: 87,
                 sat: 200,
-                val: 150,
+                val: 175,
             },
             RgbColor::Green => smart_leds::hsv::Hsv {
                 hue: 87,
