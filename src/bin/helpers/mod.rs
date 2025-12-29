@@ -2,6 +2,7 @@
 #[allow(dead_code)]
 pub enum RgbColor {
     Red,
+    Burgundy,
     Green,
     Blue,
     Yellow,

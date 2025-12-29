@@ -11,33 +11,26 @@ mod helpers;
 mod ota;
 mod rgb_led;
 mod wifi;
+
 use bt_hci::controller::ExternalController;
 use embassy_executor::Spawner;
-use embassy_net::Config;
-use embassy_net::Runner;
-use embassy_net::Stack;
-use embassy_net::driver::Driver;
 use embassy_time::{Duration, Timer};
 use esp_hal::clock::CpuClock;
 use esp_hal::peripherals::GPIO8;
 use esp_hal::peripherals::RMT;
 use esp_hal::timer::timg::TimerGroup;
 use esp_radio::ble::controller::BleConnector;
-use esp_radio::wifi::{
-    ClientConfig, ModeConfig, ScanConfig, WifiController, WifiDevice, WifiEvent, WifiStaState,
-};
+use esp_radio::wifi::WifiDevice;
 use esp_storage::FlashStorage;
 use log::info;
 use trouble_host::prelude::*;
 
 use crate::channel::CHANGE_LED_COLOR;
-use crate::channel::WIFI_READY;
 use crate::firmware::DuckFirmware;
-use crate::helpers::RgbColor;
-use crate::helpers::WifiState;
 use crate::rgb_led::RgbLedComponent;
-use crate::rgb_led::set_rgb_led_color;
-use crate::wifi::wifi_connect;
+use crate::rgb_led::set_rgb_led_offline;
+use crate::wifi::NetworkConnection;
+use crate::wifi::Wifi;
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
@@ -46,10 +39,10 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 
 extern crate alloc;
 
-const CURRENT_VERSION: &str = "1.0.37";
+const CURRENT_VERSION: &str = "1.0.41";
 const FIRMWARE_FILE_NAME: &str = "duck-firmware.bin";
 const VERSION_FILE_NAME: &str = "version.json";
-const FIRMWARE_HOST: &str = "http://192.168.100.185:80";
+const FIRMWARE_HOST: &str = "http://192.168.100.56:80";
 const WIFI_NAME: &str = "Diego";
 const WIFI_PASSWORD: &str = "Diego777";
 
@@ -102,22 +95,17 @@ async fn main(spawner: Spawner) -> ! {
         .spawn(rgb_control(peripherals.RMT, peripherals.GPIO8))
         .ok();
 
-    // Initialize wifi service
-    spawner
-        .spawn(wifi_connection_task(
-            wifi_controller,
-            &WIFI_NAME,
-            &WIFI_PASSWORD,
-        ))
-        .ok();
-
-    // Initialize  network connection
-    let (stack, runner) = wifi::build_network(wifi_interface);
-    spawner.spawn(net_connection_task(runner)).ok();
-
-    wifi::wait_for_network_connection(stack).await;
-
-    wifi::wait_for_network_ip(stack).await;
+    // Build wifi, network and network stack
+    let (wifi, network, network_stack) =
+        wifi::DuckNet::new(wifi_interface, wifi_controller, &WIFI_NAME, &WIFI_PASSWORD);
+    // Connect ESP32 to the current wifi
+    spawner.spawn(wifi_connection_task(wifi)).ok();
+    // Create a connection network
+    spawner.spawn(network_connection_task(network)).ok();
+    // Before to continue wait for the network link up
+    network_stack.wait_for_network_link_up().await;
+    // Before to continue wait for a network IP
+    network_stack.wait_for_network_ip().await;
 
     let flash = FlashStorage::new(peripherals.FLASH);
     let input_config = esp_hal::gpio::InputConfig::default().with_pull(esp_hal::gpio::Pull::Up);
@@ -125,7 +113,7 @@ async fn main(spawner: Spawner) -> ! {
     let duck_firmware = firmware::DuckFirmware::new(
         boot_button,
         flash,
-        stack.clone(),
+        network_stack.get_stack(),
         FIRMWARE_HOST,
         FIRMWARE_FILE_NAME,
         VERSION_FILE_NAME,
@@ -144,31 +132,14 @@ async fn firmware_update_task(mut duck_firmware: DuckFirmware<'static>) {
 }
 
 #[embassy_executor::task]
-async fn net_connection_task(mut runner: Runner<'static, WifiDevice<'static>>) {
-    loop {
-        match WIFI_READY.wait().await {
-            wifi_state => match wifi_state {
-                WifiState::Connected => {
-                    break;
-                }
-                WifiState::NoConnected => {
-                    Timer::after(Duration::from_secs(2)).await;
-                    continue;
-                }
-            },
-        }
-    }
-    runner.run().await
+async fn network_connection_task(connection: NetworkConnection<'static, WifiDevice<'static>>) {
+    connection.connect_task().await
 }
 
 #[embassy_executor::task]
-async fn wifi_connection_task(
-    controller: WifiController<'static>,
-    wifi_name: &'static str,
-    password: &'static str,
-) {
-    set_rgb_led_color(RgbColor::Red).await;
-    wifi_connect(controller, wifi_name, password).await;
+async fn wifi_connection_task(mut wifi: Wifi) {
+    set_rgb_led_offline().await;
+    wifi.wifi_connect_task().await;
 }
 
 #[embassy_executor::task]

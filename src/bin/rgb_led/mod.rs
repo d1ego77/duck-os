@@ -10,11 +10,19 @@ use crate::helpers::RgbColor;
 
 // Send the signal to change the led color
 pub async fn set_rgb_led_color(color: RgbColor) {
-    CHANGE_LED_COLOR.send(color).await
+    CHANGE_LED_COLOR.send(color).await;
+}
+
+pub async fn set_rgb_led_wifi_connected() {
+    CHANGE_LED_COLOR.send(RgbColor::Blue).await;
+}
+
+pub async fn set_rgb_led_offline() {
+    CHANGE_LED_COLOR.send(RgbColor::Red).await;
 }
 
 pub async fn set_rgb_led_online() {
-    CHANGE_LED_COLOR.send(RgbColor::White).await;
+    CHANGE_LED_COLOR.send(RgbColor::Burgundy).await;
 }
 
 pub struct RgbLedComponent<'ch, Color = Grb<u8>> {
@@ -41,6 +49,11 @@ impl<'ch> RgbLedComponent<'ch, Grb<u8>> {
                 hue: 0,
                 sat: 255,
                 val: 255,
+            },
+            RgbColor::Burgundy => smart_leds::hsv::Hsv {
+                hue: 240,
+                sat: 200,
+                val: 150,
             },
             RgbColor::Green => smart_leds::hsv::Hsv {
                 hue: 87,
