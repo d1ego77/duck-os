@@ -7,7 +7,7 @@ use esp_radio::wifi::{
 };
 
 use crate::channel::WIFI_READY;
-use crate::helpers::{RgbColor, WifiState, generate_seed};
+use crate::helpers::{RgbColor, RgbLedCommand, WifiState, generate_seed};
 use crate::rgb_led::{set_rgb_led_color, set_rgb_led_online, set_rgb_led_wifi_connected};
 use embassy_time::{Duration, Timer};
 
@@ -123,7 +123,7 @@ impl<'b> DuckNet<'b> {
         }
     }
     pub async fn wait_for_network_ip(&self) {
-        set_rgb_led_color(RgbColor::Pink).await;
+        set_rgb_led_color(RgbLedCommand::SetColor(RgbColor::Pink)).await;
         info!("Waiting to get IP address...");
         loop {
             if let Some(config) = self.stack.config_v4() {
@@ -233,7 +233,7 @@ pub async fn wifi_connect(
 
         match controller.connect_async().await {
             Ok(_) => {
-                set_rgb_led_color(RgbColor::Blue).await;
+                set_rgb_led_color(RgbLedCommand::SetColor(RgbColor::Blue)).await;
                 info!("Wifi: connected!");
                 WIFI_READY.signal(WifiState::Connected);
             }
@@ -272,7 +272,7 @@ pub async fn wait_for_network_connection<'a>(stack: Stack<'a>) {
     }
 }
 pub async fn wait_for_network_ip<'a>(stack: Stack<'a>) {
-    set_rgb_led_color(RgbColor::Pink).await;
+    set_rgb_led_color(RgbLedCommand::SetColor(RgbColor::Pink)).await;
     info!("Waiting to get IP address...");
     loop {
         if let Some(config) = stack.config_v4() {

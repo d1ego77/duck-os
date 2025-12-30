@@ -7,38 +7,56 @@ use smart_leds::SmartLedsWrite;
 use rgb::Grb;
 
 use crate::channel::CHANGE_LED_COLOR;
-use crate::helpers::RgbColor;
+use crate::helpers::{RgbColor, RgbLedCommand};
 
 // Send the signal to change the led color
-pub async fn set_rgb_led_color(color: RgbColor) {
+pub async fn set_rgb_led_color(color: RgbLedCommand) {
     CHANGE_LED_COLOR.send(color).await;
 }
 
 pub async fn set_rgb_led_wifi_connected() {
-    CHANGE_LED_COLOR.send(RgbColor::Blue).await;
+    CHANGE_LED_COLOR
+        .send(RgbLedCommand::SetColor(RgbColor::Blue))
+        .await;
 }
 
 pub async fn set_rgb_led_offline() {
-    CHANGE_LED_COLOR.send(RgbColor::Red).await;
+    CHANGE_LED_COLOR
+        .send(RgbLedCommand::SetColor(RgbColor::Red))
+        .await;
 }
 
 pub async fn set_rgb_led_online() {
-    CHANGE_LED_COLOR.send(RgbColor::Burgundy).await;
+    CHANGE_LED_COLOR
+        .send(RgbLedCommand::SetColor(RgbColor::Burgundy))
+        .await;
 }
 
 pub async fn breath() {
     loop {
-        CHANGE_LED_COLOR.send(RgbColor::Blue).await;
+        CHANGE_LED_COLOR
+            .send(RgbLedCommand::SetColor(RgbColor::Blue))
+            .await;
         Timer::after(Duration::from_secs(1)).await;
-        CHANGE_LED_COLOR.send(RgbColor::Red).await;
+        CHANGE_LED_COLOR
+            .send(RgbLedCommand::SetColor(RgbColor::Red))
+            .await;
         Timer::after(Duration::from_secs(1)).await;
-        CHANGE_LED_COLOR.send(RgbColor::Green).await;
+        CHANGE_LED_COLOR
+            .send(RgbLedCommand::SetColor(RgbColor::Green))
+            .await;
         Timer::after(Duration::from_secs(1)).await;
-        CHANGE_LED_COLOR.send(RgbColor::Yellow).await;
+        CHANGE_LED_COLOR
+            .send(RgbLedCommand::SetColor(RgbColor::Yellow))
+            .await;
         Timer::after(Duration::from_secs(1)).await;
-        CHANGE_LED_COLOR.send(RgbColor::Pink).await;
+        CHANGE_LED_COLOR
+            .send(RgbLedCommand::SetColor(RgbColor::Pink))
+            .await;
         Timer::after(Duration::from_secs(1)).await;
-        CHANGE_LED_COLOR.send(RgbColor::White).await;
+        CHANGE_LED_COLOR
+            .send(RgbLedCommand::SetColor(RgbColor::White))
+            .await;
         Timer::after(Duration::from_secs(1)).await;
     }
 }
@@ -61,59 +79,7 @@ impl<'ch> RgbLedComponent<'ch, Grb<u8>> {
             rgb_led: SmartLedsAdapter::new(rmt.channel0, gpio8, rmt_buffer),
         }
     }
-    pub fn set_color(&mut self, color: RgbColor, level: u8) {
-        let color = match color {
-            RgbColor::Red => smart_leds::hsv::Hsv {
-                hue: 0,
-                sat: 255,
-                val: 255,
-            },
-            RgbColor::Burgundy => smart_leds::hsv::Hsv {
-                hue: 87,
-                sat: 200,
-                val: 175,
-            },
-            RgbColor::Green => smart_leds::hsv::Hsv {
-                hue: 87,
-                sat: 255,
-                val: 255,
-            },
-            RgbColor::Blue => smart_leds::hsv::Hsv {
-                hue: 191,
-                sat: 255,
-                val: 255,
-            },
-            RgbColor::Yellow => smart_leds::hsv::Hsv {
-                hue: 45,
-                sat: 255,
-                val: 255,
-            },
-            RgbColor::Pink => smart_leds::hsv::Hsv {
-                hue: 213,
-                sat: 255,
-                val: 255,
-            },
-            RgbColor::Gray => smart_leds::hsv::Hsv {
-                hue: 0,
-                sat: 0,
-                val: 128,
-            },
-            RgbColor::Orange => smart_leds::hsv::Hsv {
-                hue: 30,
-                sat: 255,
-                val: 255,
-            },
-            RgbColor::White => smart_leds::hsv::Hsv {
-                hue: 255,
-                sat: 0,
-                val: 255,
-            },
-            RgbColor::None => smart_leds::hsv::Hsv {
-                hue: 0,
-                sat: 0,
-                val: 0,
-            },
-        };
+    pub fn set_color(&mut self, color: smart_leds::hsv::Hsv, level: u8) {
         let data: rgb::RGB8 = smart_leds::hsv::hsv2rgb(color);
         self.rgb_led
             .write(smart_leds::brightness(

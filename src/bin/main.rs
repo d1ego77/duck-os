@@ -154,7 +154,11 @@ async fn rgb_control(rmt: RMT<'static>, gpio8: GPIO8<'static>) {
 
     loop {
         let val = CHANGE_LED_COLOR.receive().await;
-        led.set_color(val, 10);
+        let color = match val {
+            helpers::RgbLedCommand::SetColor(rgb_color) => rgb_color.hsv(),
+            helpers::RgbLedCommand::SetCustom(hsv) => hsv,
+        };
+        led.set_color(color, 10);
     }
 }
 

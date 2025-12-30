@@ -10,7 +10,7 @@ use heapless::format;
 
 use crate::{
     CURRENT_VERSION,
-    helpers::{DuckError, DuckResult, RgbColor, extract_version, is_newer},
+    helpers::{DuckError, DuckResult, RgbColor, RgbLedCommand, extract_version, is_newer},
     ota::{Ota, OtaHttpUpdater},
     rgb_led::{set_rgb_led_color, set_rgb_led_online},
 };
@@ -49,7 +49,7 @@ impl<'a> DuckFirmware<'a> {
             //         Timer::after(Duration::from_secs(5)).await;
             //         continue;
             //     } else {
-            set_rgb_led_color(RgbColor::Red).await;
+            set_rgb_led_color(RgbLedCommand::SetColor(RgbColor::Red)).await;
             Timer::after(Duration::from_secs(1)).await;
             match self.get_server_framework_version().await {
                 Ok(version) => {
@@ -79,7 +79,7 @@ impl<'a> DuckFirmware<'a> {
         let mut rx_buffer = [0; 4096];
         let mut tx_buffer = [0; 4096];
 
-        set_rgb_led_color(RgbColor::Pink).await;
+        set_rgb_led_color(RgbLedCommand::SetColor(RgbColor::Pink)).await;
         Timer::after(Duration::from_secs(2)).await;
         info!("Name: {}", self.host);
         info!("Path: {}", self.path);

@@ -13,6 +13,68 @@ pub enum RgbColor {
     None,
 }
 
+impl RgbColor {
+    pub fn hsv(&self) -> smart_leds::hsv::Hsv {
+        match self {
+            RgbColor::Red => smart_leds::hsv::Hsv {
+                hue: 0,
+                sat: 255,
+                val: 255,
+            },
+            RgbColor::Burgundy => smart_leds::hsv::Hsv {
+                hue: 87,
+                sat: 200,
+                val: 175,
+            },
+            RgbColor::Green => smart_leds::hsv::Hsv {
+                hue: 87,
+                sat: 255,
+                val: 255,
+            },
+            RgbColor::Blue => smart_leds::hsv::Hsv {
+                hue: 191,
+                sat: 255,
+                val: 255,
+            },
+            RgbColor::Yellow => smart_leds::hsv::Hsv {
+                hue: 45,
+                sat: 255,
+                val: 255,
+            },
+            RgbColor::Pink => smart_leds::hsv::Hsv {
+                hue: 213,
+                sat: 255,
+                val: 255,
+            },
+            RgbColor::Gray => smart_leds::hsv::Hsv {
+                hue: 0,
+                sat: 0,
+                val: 128,
+            },
+            RgbColor::Orange => smart_leds::hsv::Hsv {
+                hue: 30,
+                sat: 255,
+                val: 255,
+            },
+            RgbColor::White => smart_leds::hsv::Hsv {
+                hue: 255,
+                sat: 0,
+                val: 255,
+            },
+            RgbColor::None => smart_leds::hsv::Hsv {
+                hue: 0,
+                sat: 0,
+                val: 0,
+            },
+        }
+    }
+}
+
+pub enum RgbLedCommand {
+    SetColor(RgbColor),
+    SetCustom(smart_leds::hsv::Hsv),
+}
+
 #[derive(Debug)]
 pub enum DuckError {
     NetworkError,

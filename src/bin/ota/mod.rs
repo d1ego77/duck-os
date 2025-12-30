@@ -8,7 +8,7 @@ use embedded_io_async::{Read, Write};
 use esp_bootloader_esp_idf::{ota_updater::OtaUpdater, partitions::FlashRegion};
 
 use crate::{
-    helpers::{DuckError, DuckResult, RgbColor},
+    helpers::{DuckError, DuckResult, RgbColor, RgbLedCommand},
     rgb_led::set_rgb_led_color,
 };
 use embedded_storage::Storage;
@@ -117,7 +117,7 @@ where
             .set_current_ota_state(esp_bootloader_esp_idf::ota::OtaImageState::New)
             .unwrap();
 
-        set_rgb_led_color(RgbColor::Blue).await;
+        set_rgb_led_color(RgbLedCommand::SetColor(RgbColor::Blue)).await;
         info!("Reiniciando...");
         Timer::after(Duration::from_secs(5)).await;
 
