@@ -27,6 +27,7 @@ use trouble_host::prelude::*;
 
 use crate::channel::CHANGE_LED_COLOR;
 use crate::firmware::DuckFirmware;
+use crate::rgb_led::RgbLed;
 use crate::rgb_led::RgbLedComponent;
 use crate::rgb_led::breath;
 use crate::rgb_led::set_rgb_led_offline;
@@ -40,7 +41,7 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 
 extern crate alloc;
 
-const CURRENT_VERSION: &str = "1.0.44";
+const CURRENT_VERSION: &str = "1.0.47";
 const FIRMWARE_FILE_NAME: &str = "duck-firmware.bin";
 const VERSION_FILE_NAME: &str = "version.json";
 const FIRMWARE_HOST: &str = "http://192.168.100.185:80";
@@ -92,9 +93,8 @@ async fn main(spawner: Spawner) -> ! {
 
     let _stack = trouble_host::new(ble_controller, &mut resources);
 
-    spawner
-        .spawn(rgb_control(peripherals.RMT, peripherals.GPIO8))
-        .ok();
+    let led = rgb_led::RgbLed::new(peripherals.RMT, peripherals.GPIO8);
+    spawner.spawn(rgb_manager_task(led)).ok();
 
     // Build wifi, network and network stack
     let (wifi, network, network_stack) =
@@ -131,6 +131,7 @@ async fn main(spawner: Spawner) -> ! {
 async fn breath_task() {
     breath().await;
 }
+
 #[embassy_executor::task]
 async fn firmware_update_task(mut duck_firmware: DuckFirmware<'static>) {
     duck_firmware.update_firmware().await;
@@ -148,17 +149,16 @@ async fn wifi_connection_task(mut wifi: Wifi) {
 }
 
 #[embassy_executor::task]
-async fn rgb_control(rmt: RMT<'static>, gpio8: GPIO8<'static>) {
-    let mut rmt_buffer = esp_hal_smartled::smart_led_buffer!(1);
-    let mut led = RgbLedComponent::new(rmt, gpio8, &mut rmt_buffer);
-
+async fn rgb_manager_task(led: RgbLed<'static, GPIO8<'static>>) {
+    let mut buffer = esp_hal_smartled::smart_led_buffer!(1);
+    let mut adapter = led.with_buffer(&mut buffer);
     loop {
         let val = CHANGE_LED_COLOR.receive().await;
-        let color = match val {
-            helpers::RgbLedCommand::SetColor(rgb_color) => rgb_color.hsv(),
-            helpers::RgbLedCommand::SetCustom(hsv) => hsv,
+        let (color, level) = match val {
+            helpers::RgbLedCommand::SetColor(rgb_color) => (rgb_color.hsv(), 10),
+            helpers::RgbLedCommand::SetCustomColor(hsv) => hsv,
         };
-        led.set_color(color, 10);
+        adapter.set_color(color, level);
     }
 }
 

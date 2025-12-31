@@ -72,7 +72,7 @@ impl RgbColor {
 
 pub enum RgbLedCommand {
     SetColor(RgbColor),
-    SetCustom(smart_leds::hsv::Hsv),
+    SetCustomColor((smart_leds::hsv::Hsv, u8)),
 }
 
 #[derive(Debug)]

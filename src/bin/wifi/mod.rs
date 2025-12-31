@@ -107,7 +107,7 @@ impl<'b> DuckNet<'b> {
     {
         let wifi = Wifi::new(controller, wifi_name, password);
         let (stack, runner) = build_network(driver);
-        let connection = NetworkConnection::new(runner, stack);
+        let connection = NetworkConnection::new(runner);
         let ducknet = Self { stack };
         (wifi, connection, ducknet)
     }
@@ -146,7 +146,7 @@ impl<'b, D> NetworkConnection<'b, D>
 where
     D: Driver,
 {
-    pub fn new(runner: Runner<'b, D>, stack: Stack<'b>) -> Self {
+    pub fn new(runner: Runner<'b, D>) -> Self {
         Self { runner }
     }
     pub async fn connect_task(mut self) {
