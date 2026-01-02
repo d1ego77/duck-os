@@ -1,12 +1,12 @@
 use core::net::Ipv4Addr;
 
 use alloc::string::{String, ToString};
-use defmt::info;
 use embassy_net::{Stack, tcp::TcpSocket};
 use embassy_time::{Duration, Timer};
 use embedded_io_async::{Read, Write};
 use esp_storage::FlashStorage;
 use heapless::format;
+use log::info;
 
 use crate::{
     CURRENT_VERSION,
@@ -44,6 +44,8 @@ impl<'a> DuckFirmware<'a> {
     }
     pub async fn update_firmware(&mut self) {
         loop {
+            info!("Checking for firmware updates...");
+            Timer::after(Duration::from_millis(10)).await;
             //     if !self.boot_button.is_low() {
             //         info!("cheking {}", self.boot_button.is_low());
             //         Timer::after(Duration::from_secs(5)).await;
@@ -54,7 +56,7 @@ impl<'a> DuckFirmware<'a> {
             match self.get_server_framework_version().await {
                 Ok(version) => {
                     info!(
-                        "New version: {} - Current Version:{}",
+                        "New version: {} | Current Version:{}",
                         version, CURRENT_VERSION
                     );
                     if is_newer(version.as_str(), CURRENT_VERSION) {
@@ -64,11 +66,11 @@ impl<'a> DuckFirmware<'a> {
                     }
                 }
                 Err(_) => {
-                    info!("Fail to get server version");
+                    info!("Firmware update server connection failed...");
                 }
             }
             // }
-
+            set_rgb_led_online().await;
             Timer::after(Duration::from_secs(20)).await;
         }
     }

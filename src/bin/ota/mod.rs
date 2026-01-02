@@ -1,11 +1,11 @@
 use core::net::Ipv4Addr;
 
 use alloc::string::{String, ToString};
-use defmt::info;
 use embassy_net::tcp::TcpSocket;
 use embassy_time::{Duration, Timer};
 use embedded_io_async::{Read, Write};
 use esp_bootloader_esp_idf::{ota_updater::OtaUpdater, partitions::FlashRegion};
+use log::info;
 
 use crate::{
     helpers::{DuckError, DuckResult, RgbColor, RgbLedCommand},
@@ -118,7 +118,7 @@ where
             .unwrap();
 
         set_rgb_led_color(RgbLedCommand::SetColor(RgbColor::Blue)).await;
-        info!("Reiniciando...");
+        info!("Restarting...");
         Timer::after(Duration::from_secs(5)).await;
 
         esp_hal::rom::software_reset();

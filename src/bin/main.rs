@@ -15,9 +15,13 @@ mod wifi;
 use bt_hci::controller::ExternalController;
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
+use esp_hal::Blocking;
+use esp_hal::analog::adc::Adc;
+use esp_hal::analog::adc::AdcPin;
 use esp_hal::clock::CpuClock;
+use esp_hal::peripherals::ADC1;
+use esp_hal::peripherals::GPIO6;
 use esp_hal::peripherals::GPIO8;
-use esp_hal::peripherals::RMT;
 use esp_hal::timer::timg::TimerGroup;
 use esp_radio::ble::controller::BleConnector;
 use esp_radio::wifi::WifiDevice;
@@ -28,9 +32,10 @@ use trouble_host::prelude::*;
 use crate::channel::CHANGE_LED_COLOR;
 use crate::firmware::DuckFirmware;
 use crate::rgb_led::RgbLed;
-use crate::rgb_led::RgbLedComponent;
 use crate::rgb_led::breath;
+use crate::rgb_led::set_rgb_led_light;
 use crate::rgb_led::set_rgb_led_offline;
+use crate::rgb_led::set_rgb_led_online;
 use crate::wifi::NetworkConnection;
 use crate::wifi::Wifi;
 
@@ -41,7 +46,7 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 
 extern crate alloc;
 
-const CURRENT_VERSION: &str = "1.0.47";
+const CURRENT_VERSION: &str = "1.0.60";
 const FIRMWARE_FILE_NAME: &str = "duck-firmware.bin";
 const VERSION_FILE_NAME: &str = "version.json";
 const FIRMWARE_HOST: &str = "http://192.168.100.185:80";
@@ -120,16 +125,72 @@ async fn main(spawner: Spawner) -> ! {
         VERSION_FILE_NAME,
     );
     spawner.spawn(firmware_update_task(duck_firmware)).ok();
+    let light_sensor: LightSensor = LightSensor::new(peripherals.GPIO6, peripherals.ADC1);
+    spawner.spawn(light_sensor_manager_task(light_sensor)).ok();
     spawner.spawn(breath_task()).ok();
     loop {
         info!("running...");
-        Timer::after(Duration::from_secs(5)).await;
+        Timer::after(Duration::from_secs(10)).await;
     }
+}
+
+#[embassy_executor::task]
+async fn light_sensor_manager_task(mut light_sensor: LightSensor<'static>) {
+    loop {
+        let intensity = light_sensor.current_light_intensity_value();
+        let adc = adc_to_255_step5(intensity);
+        info!("intensity{}", adc);
+        set_rgb_led_light(adc).await;
+        info!("Light Level: {}", intensity);
+        Timer::after(Duration::from_secs(1)).await;
+    }
+}
+
+fn adc_to_255_step10(adc: u16) -> u8 {
+    const IN_MIN: u16 = 2146;
+    const IN_MAX: u16 = 4095;
+
+    let adc = adc.clamp(IN_MIN, IN_MAX);
+
+    let mut value = ((IN_MAX - adc) as u32 * 255 / (IN_MAX - IN_MIN) as u32) as u8;
+
+    value = ((value + 5) / 10) * 10;
+
+    if value > 250 { 255 } else { value }
+}
+fn adc_to_255(adc: u16) -> u8 {
+    const IN_MIN: u16 = 2146;
+    const IN_MAX: u16 = 4095;
+
+    let adc = adc.clamp(IN_MIN, IN_MAX);
+
+    let scaled = (IN_MAX - adc) as u32 * 255 / (IN_MAX - IN_MIN) as u32;
+
+    scaled as u8
+}
+
+fn adc_to_255_step5(adc: u16) -> u8 {
+    const IN_MIN: u16 = 2146; // luz
+    const IN_MAX: u16 = 4095; // oscuridad
+    const STEP: u8 = 5;
+
+    // Clamp
+    let adc = adc.clamp(IN_MIN, IN_MAX);
+
+    // Mapeo invertido correcto
+    let mut value = ((adc - IN_MIN) as u32 * 255 / (IN_MAX - IN_MIN) as u32) as u8;
+
+    // Cuantización a pasos de 5 (redondeo)
+    value = ((value + STEP / 2) / STEP) * STEP;
+
+    // Preservar el máximo real
+    if value > 255 - STEP { 255 } else { value }
 }
 
 #[embassy_executor::task]
 async fn breath_task() {
     breath().await;
+    set_rgb_led_online().await;
 }
 
 #[embassy_executor::task]
@@ -164,4 +225,25 @@ async fn rgb_manager_task(led: RgbLed<'static, GPIO8<'static>>) {
 
 fn get_current_version() -> &'static str {
     CURRENT_VERSION
+}
+
+struct LightSensor<'a> {
+    pin: AdcPin<GPIO6<'a>, ADC1<'a>>,
+    adc1: Adc<'a, ADC1<'a>, Blocking>,
+}
+impl<'a> LightSensor<'a> {
+    fn new(gpio6: GPIO6<'a>, adc1: ADC1<'a>) -> Self {
+        let mut adc1_config = esp_hal::analog::adc::AdcConfig::new();
+        let pin = adc1_config.enable_pin(gpio6, esp_hal::analog::adc::Attenuation::_11dB);
+        LightSensor {
+            adc1: esp_hal::analog::adc::Adc::new(adc1, adc1_config),
+            pin: pin,
+        }
+    }
+    fn current_light_intensity_value(&mut self) -> u16 {
+        match nb::block!(self.adc1.read_oneshot(&mut self.pin)) {
+            Ok(val) => val,
+            Err(_) => 0,
+        }
+    }
 }

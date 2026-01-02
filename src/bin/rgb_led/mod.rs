@@ -30,11 +30,23 @@ pub async fn set_rgb_led_offline() {
 
 pub async fn set_rgb_led_online() {
     CHANGE_LED_COLOR
-        .send(RgbLedCommand::SetColor(RgbColor::Burgundy))
+        .send(RgbLedCommand::SetColor(RgbColor::White))
+        .await;
+}
+pub async fn set_rgb_led_light(level: u8) {
+    CHANGE_LED_COLOR
+        .send(RgbLedCommand::SetCustomColor((
+            smart_leds::hsv::Hsv {
+                hue: 255,
+                sat: 0,
+                val: 255,
+            },
+            level,
+        )))
         .await;
 }
 pub async fn breath() {
-    loop {
+    for _ in 0..2 {
         for i in 0..255 {
             CHANGE_LED_COLOR
                 .send(RgbLedCommand::SetCustomColor((
@@ -111,36 +123,6 @@ pub struct RgbLedAdapter<'ch> {
 impl<'ch> RgbLedAdapter<'ch> {
     pub fn new(rgb_led: SmartLedsAdapter<'ch, 25>) -> Self {
         Self { rgb_led }
-    }
-    pub fn set_color(&mut self, color: smart_leds::hsv::Hsv, level: u8) {
-        let data: rgb::RGB8 = smart_leds::hsv::hsv2rgb(color);
-        self.rgb_led
-            .write(smart_leds::brightness(
-                smart_leds::gamma([data].into_iter()),
-                level,
-            ))
-            .expect("Error al setear el color")
-    }
-}
-
-pub struct RgbLedComponent<'ch, Color = Grb<u8>> {
-    rgb_led: SmartLedsAdapter<'ch, 25, Color>,
-}
-impl<'ch> RgbLedComponent<'ch, Grb<u8>> {
-    pub fn new(
-        peripheral: RMT<'ch>,
-        gpio8: GPIO8<'ch>,
-        rmt_buffer: &'ch mut [PulseCode; 25],
-    ) -> RgbLedComponent<'ch> {
-        let rmt: esp_hal::rmt::Rmt<'_, esp_hal::Blocking> = {
-            let frequency: esp_hal::time::Rate = esp_hal::time::Rate::from_mhz(80);
-            esp_hal::rmt::Rmt::new(peripheral, frequency)
-        }
-        .unwrap();
-
-        Self {
-            rgb_led: SmartLedsAdapter::new(rmt.channel0, gpio8, rmt_buffer),
-        }
     }
     pub fn set_color(&mut self, color: smart_leds::hsv::Hsv, level: u8) {
         let data: rgb::RGB8 = smart_leds::hsv::hsv2rgb(color);
