@@ -62,7 +62,7 @@ where
 
             let data = &buf[..n];
 
-            // ✅ Saltar headers HTTP
+            // Saltar headers HTTP
             let payload = data;
 
             info!("Received {} bytes", payload.len());
@@ -72,14 +72,14 @@ where
             match partition.write(offset, payload) {
                 Ok(_) => info!("Chunk written"),
                 Err(e) => {
-                    info!("❌ Error writing flash at offset {}: {:?}", offset, e);
+                    info!("X Error writing flash at offset {}: {:?}", offset, e);
                     break;
                 }
             }
 
             offset += payload.len() as u32;
 
-            // ✅ Dejar respirar la pila TCP (OBLIGATORIO)
+            // Dejar respirar la pila TCP (OBLIGATORIO)
             embassy_time::Timer::after_millis(1).await;
         }
         info!("Descarga finalizada: {} bytes", offset);

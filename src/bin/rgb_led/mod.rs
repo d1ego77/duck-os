@@ -1,15 +1,12 @@
+use crate::channel::CHANGE_LED_COLOR;
+use crate::helpers::{RgbColor, RgbLedCommand};
 use embassy_time::{Duration, Timer};
 use esp_hal::Blocking;
 use esp_hal::gpio::interconnect::PeripheralOutput;
-use esp_hal::peripherals::{GPIO8, RMT};
+use esp_hal::peripherals::RMT;
 use esp_hal::rmt::{PulseCode, Rmt};
 use esp_hal_smartled::SmartLedsAdapter;
 use smart_leds::SmartLedsWrite;
-
-use rgb::Grb;
-
-use crate::channel::CHANGE_LED_COLOR;
-use crate::helpers::{RgbColor, RgbLedCommand};
 
 // Send the signal to change the led color
 pub async fn set_rgb_led_color(color: RgbLedCommand) {
@@ -60,34 +57,6 @@ pub async fn breath() {
                 .await;
             Timer::after(Duration::from_millis(30)).await
         }
-    }
-}
-pub async fn breath2() {
-    loop {
-        CHANGE_LED_COLOR
-            .send(RgbLedCommand::SetColor(RgbColor::Blue))
-            .await;
-        Timer::after(Duration::from_secs(1)).await;
-        CHANGE_LED_COLOR
-            .send(RgbLedCommand::SetColor(RgbColor::Red))
-            .await;
-        Timer::after(Duration::from_secs(1)).await;
-        CHANGE_LED_COLOR
-            .send(RgbLedCommand::SetColor(RgbColor::Green))
-            .await;
-        Timer::after(Duration::from_secs(1)).await;
-        CHANGE_LED_COLOR
-            .send(RgbLedCommand::SetColor(RgbColor::Yellow))
-            .await;
-        Timer::after(Duration::from_secs(1)).await;
-        CHANGE_LED_COLOR
-            .send(RgbLedCommand::SetColor(RgbColor::Pink))
-            .await;
-        Timer::after(Duration::from_secs(1)).await;
-        CHANGE_LED_COLOR
-            .send(RgbLedCommand::SetColor(RgbColor::White))
-            .await;
-        Timer::after(Duration::from_secs(1)).await;
     }
 }
 
