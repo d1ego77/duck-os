@@ -167,7 +167,6 @@ fn light_to_intensity(adc: u16) -> u8 {
     } else {
         0
     };
-
     value
 }
 
