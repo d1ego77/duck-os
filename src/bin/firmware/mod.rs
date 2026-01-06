@@ -6,7 +6,7 @@ use embassy_time::{Duration, Timer};
 use embedded_io_async::{Read, Write};
 use esp_storage::FlashStorage;
 use heapless::format;
-use log::info;
+use log::{error, info};
 
 use crate::{
     CURRENT_VERSION,
@@ -66,7 +66,7 @@ impl<'a> DuckFirmware<'a> {
                     }
                 }
                 Err(_) => {
-                    info!("Firmware update server connection failed...");
+                    error!("Firmware update server connection failed...");
                 }
             }
             // }
@@ -93,12 +93,12 @@ impl<'a> DuckFirmware<'a> {
                 match ota_http_updater.check_firmware_server_connection().await {
                     Ok(firmware_server) => firmware_server.update_firmware().await,
                     Err(_) => {
-                        info!("Fail to get the new firmware");
+                        error!("Fail to get the new firmware");
                     }
                 };
             }
             Err(_) => {
-                info!("Fail to build OTA");
+                error!("Fail to build OTA");
             }
         }
         set_rgb_led_online().await;

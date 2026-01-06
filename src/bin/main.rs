@@ -50,7 +50,7 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 
 extern crate alloc;
 
-const CURRENT_VERSION: &str = "1.0.73";
+const CURRENT_VERSION: &str = "1.0.74";
 const FIRMWARE_FILE_NAME: &str = "duck-firmware.bin";
 const VERSION_FILE_NAME: &str = "version.json";
 const FIRMWARE_HOST: &str = "http://192.168.100.185:80";
@@ -144,11 +144,11 @@ async fn main(spawner: Spawner) -> ! {
 async fn sensor_manager_task(mut sensor_manager: Sensor<'static, GPIO6<'static>, GPIO2<'static>>) {
     loop {
         let light = sensor_manager.current_light();
-        let temp = sensor_manager.current_moisture();
+        let moisture = sensor_manager.current_moisture();
         let adc = light_to_intensity(light);
 
         info!("Intensity: {}", adc);
-        info!("Temp:{} ", temp);
+        info!("Moisture: {}% ", moisture);
 
         set_rgb_led_light(adc).await;
 
@@ -261,6 +261,7 @@ where
             moisture_sensor_pin: gpio_moisture,
         }
     }
+
     // Get current light value from sensor
     fn current_light(&mut self) -> u16 {
         match nb::block!(self.adc1.read_oneshot(&mut self.light_sensor_pin)) {
@@ -272,8 +273,14 @@ where
     // Get current moisture value from sensor
     fn current_moisture(&mut self) -> u16 {
         match nb::block!(self.adc1.read_oneshot(&mut self.moisture_sensor_pin)) {
-            Ok(val) => val,
+            Ok(val) => moistorure_to_percent(val),
             Err(_) => 0,
         }
     }
+}
+
+fn moistorure_to_percent(value: u16) -> u16 {
+    const MAX_VALUE: u16 = 4095;
+    let percent = ((MAX_VALUE - value) * 100) / MAX_VALUE;
+    percent
 }
