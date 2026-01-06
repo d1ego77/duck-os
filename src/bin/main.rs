@@ -129,7 +129,7 @@ async fn main(spawner: Spawner) -> ! {
     );
     spawner.spawn(firmware_update_task(duck_firmware)).ok();
     let sensor = Sensor::new(peripherals.GPIO6, peripherals.GPIO2, peripherals.ADC1);
-    spawner.spawn(light_sensor_manager_task(sensor)).ok();
+    spawner.spawn(sensor_manager_task(sensor)).ok();
     spawner.spawn(breath_task()).ok();
     loop {
         info!("Running...");
@@ -137,23 +137,27 @@ async fn main(spawner: Spawner) -> ! {
     }
 }
 
+//
+// Check sensor values periodically.
+//
 #[embassy_executor::task]
-async fn light_sensor_manager_task(
-    mut light_sensor: Sensor<'static, GPIO6<'static>, GPIO2<'static>>,
-) {
+async fn sensor_manager_task(mut sensor_manager: Sensor<'static, GPIO6<'static>, GPIO2<'static>>) {
     loop {
-        let light = light_sensor.current_light_intensity_value();
-        let temp = light_sensor.current_temp_value();
+        let light = sensor_manager.current_light();
+        let temp = sensor_manager.current_moisture();
         let adc = light_to_intensity(light);
+
         info!("Intensity: {}", adc);
         info!("Temp:{} ", temp);
+
         set_rgb_led_light(adc).await;
+
         Timer::after(Duration::from_secs(1)).await;
     }
 }
 
 ///
-/// Transform a light value to a rgb intensity
+/// Transform a light value to a rgb intensity.
 ///
 fn light_to_intensity(adc: u16) -> u8 {
     let value = if adc <= 2200 {
@@ -167,28 +171,43 @@ fn light_to_intensity(adc: u16) -> u8 {
     value
 }
 
+//
+// Embassy rgb led animation
+//
 #[embassy_executor::task]
 async fn breath_task() {
     breath().await;
     set_rgb_led_online().await;
 }
 
+///
+/// Update firmware when a new version is available.
+///
 #[embassy_executor::task]
 async fn firmware_update_task(mut duck_firmware: DuckFirmware<'static>) {
     duck_firmware.update_firmware().await;
 }
 
+///
+/// Conection network initialization
+///
 #[embassy_executor::task]
 async fn network_connection_task(connection: NetworkConnection<'static, WifiDevice<'static>>) {
     connection.connect_task().await
 }
 
+///
+/// Wifi initialization
+///
 #[embassy_executor::task]
 async fn wifi_connection_task(mut wifi: Wifi) {
     set_rgb_led_offline().await;
     wifi.wifi_connect_task().await;
 }
 
+///
+/// Rgb change color administrator
+///
 #[embassy_executor::task]
 async fn rgb_manager_task(led: RgbLed<'static, GPIO8<'static>>) {
     let mut buffer = esp_hal_smartled::smart_led_buffer!(1);
@@ -203,42 +222,56 @@ async fn rgb_manager_task(led: RgbLed<'static, GPIO8<'static>>) {
     }
 }
 
+//
+//Get current version of firmware
+//
 fn get_current_version() -> &'static str {
     CURRENT_VERSION
 }
 
-struct Sensor<'a, I, T>
+//
+// Wrap sensors
+//    Light sensor
+//    Moisture sensor
+struct Sensor<'a, I, M>
 where
     I: PeripheralInput<'a>,
-    T: PeripheralInput<'a>,
+    M: PeripheralInput<'a>,
 {
     light_sensor_pin: AdcPin<I, ADC1<'a>>,
-    temp_sensor_pin: AdcPin<T, ADC1<'a>>,
+    moisture_sensor_pin: AdcPin<M, ADC1<'a>>,
     adc1: Adc<'a, ADC1<'a>, Blocking>,
 }
-impl<'a, I, T> Sensor<'a, I, T>
+
+impl<'a, I, M> Sensor<'a, I, M>
 where
     I: PeripheralInput<'a> + AdcChannel + AnalogPin,
-    T: PeripheralInput<'a> + AdcChannel + AnalogPin,
+    M: PeripheralInput<'a> + AdcChannel + AnalogPin,
 {
-    fn new(gpio6: I, gpio2: T, adc1: ADC1<'a>) -> Self {
+    // Sensor manager
+    fn new(gpio_light: I, gpio_moisture: M, adc1: ADC1<'a>) -> Self {
         let mut adc1_config = esp_hal::analog::adc::AdcConfig::new();
-        let pin = adc1_config.enable_pin(gpio6, esp_hal::analog::adc::Attenuation::_11dB);
-        let pin2 = adc1_config.enable_pin(gpio2, esp_hal::analog::adc::Attenuation::_11dB);
+        let gpio_light =
+            adc1_config.enable_pin(gpio_light, esp_hal::analog::adc::Attenuation::_11dB);
+        let gpio_moisture =
+            adc1_config.enable_pin(gpio_moisture, esp_hal::analog::adc::Attenuation::_11dB);
         Sensor {
             adc1: esp_hal::analog::adc::Adc::new(adc1, adc1_config),
-            light_sensor_pin: pin,
-            temp_sensor_pin: pin2,
+            light_sensor_pin: gpio_light,
+            moisture_sensor_pin: gpio_moisture,
         }
     }
-    fn current_light_intensity_value(&mut self) -> u16 {
+    // Get current light value from sensor
+    fn current_light(&mut self) -> u16 {
         match nb::block!(self.adc1.read_oneshot(&mut self.light_sensor_pin)) {
             Ok(val) => val,
             Err(_) => 0,
         }
     }
-    fn current_temp_value(&mut self) -> u16 {
-        match nb::block!(self.adc1.read_oneshot(&mut self.temp_sensor_pin)) {
+
+    // Get current moisture value from sensor
+    fn current_moisture(&mut self) -> u16 {
+        match nb::block!(self.adc1.read_oneshot(&mut self.moisture_sensor_pin)) {
             Ok(val) => val,
             Err(_) => 0,
         }
