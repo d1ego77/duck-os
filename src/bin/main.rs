@@ -270,7 +270,7 @@ where
     }
 
     // Get current moisture value from sensor
-    fn current_moisture(&mut self) -> u16 {
+    fn current_moisture(&mut self) -> u8 {
         match nb::block!(self.adc1.read_oneshot(&mut self.moisture_sensor_pin)) {
             Ok(val) => moistorure_to_percent(val),
             Err(_) => 0,
@@ -278,8 +278,17 @@ where
     }
 }
 
-fn moistorure_to_percent(value: u16) -> u16 {
-    const MAX_VALUE: u16 = 4095;
-    let percent = ((MAX_VALUE - value) * 100) / MAX_VALUE;
-    percent
+fn moistorure_to_percent(value: u16) -> u8 {
+    let wet_start = 2700i32;
+    let wet_end = 2800i32;
+    let dry = 4095i32;
+    let v = value as i32;
+
+    if v < wet_start {
+        0
+    } else if v <= wet_end {
+        100
+    } else {
+        (((dry - v) * 100) / (dry - wet_end)).clamp(0, 100) as u8
+    }
 }
