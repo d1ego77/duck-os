@@ -14,6 +14,7 @@ mod wifi;
 
 use bt_hci::controller::ExternalController;
 use embassy_executor::Spawner;
+use embassy_net::tcp::TcpSocket;
 use embassy_time::{Duration, Timer};
 use esp_hal::Blocking;
 use esp_hal::analog::adc::Adc;
@@ -37,7 +38,6 @@ use crate::channel::CHANGE_LED_COLOR;
 use crate::firmware::DuckFirmware;
 use crate::rgb_led::RgbLed;
 use crate::rgb_led::breath;
-use crate::rgb_led::set_rgb_led_light;
 use crate::rgb_led::set_rgb_led_offline;
 use crate::rgb_led::set_rgb_led_online;
 use crate::wifi::NetworkConnection;
@@ -58,6 +58,7 @@ const WIFI_NAME: &str = "Diego";
 const WIFI_PASSWORD: &str = "Diego777";
 const CONNECTIONS_MAX: usize = 1;
 const L2CAP_CHANNELS_MAX: usize = 1;
+const WEB_SERVER_PORT: u16 = 8080;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
@@ -131,6 +132,7 @@ async fn main(spawner: Spawner) -> ! {
     let sensor = Sensor::new(peripherals.GPIO6, peripherals.GPIO2, peripherals.ADC1);
     spawner.spawn(sensor_manager_task(sensor)).ok();
     spawner.spawn(breath_task()).ok();
+    spawner.spawn(web_server(network_stack.get_stack())).ok();
     loop {
         info!("Running...");
         Timer::after(Duration::from_secs(10)).await;
@@ -145,14 +147,49 @@ async fn sensor_manager_task(mut sensor_manager: Sensor<'static, GPIO6<'static>,
     loop {
         let light = sensor_manager.current_light();
         let moisture = sensor_manager.current_moisture();
-        let adc = light_to_intensity(light);
+        // let adc = light_to_intensity(light);
 
-        info!("Intensity: {}", adc);
+        info!("Light: {}%", light);
         info!("Moisture: {}% ", moisture);
 
-        set_rgb_led_light(adc).await;
+        // set_rgb_led_light(adc).await;
 
-        Timer::after(Duration::from_secs(1)).await;
+        Timer::after(Duration::from_secs(10)).await;
+    }
+}
+
+#[embassy_executor::task]
+async fn web_server(stack: embassy_net::Stack<'static>) {
+    loop {
+        let mut rx_buffer = [0; 4096];
+        let mut tx_buffer = [0; 4096];
+
+        let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
+
+        socket.accept(WEB_SERVER_PORT).await.unwrap();
+        socket.set_timeout(Some(embassy_time::Duration::from_secs(10)));
+
+        let mut buf = [0; 1024];
+        loop {
+            let n = match socket.read(&mut buf).await {
+                Ok(0) => {
+                    info!("read EOF");
+                    break;
+                }
+                Ok(n) => n,
+                Err(e) => {
+                    info!("read error: {:?}", e);
+                    break;
+                }
+            };
+
+            let data = &buf[..n];
+
+            // Saltar headers HTTP
+            let payload = data;
+
+            info!("Received {} bytes", payload.len());
+        }
     }
 }
 
@@ -171,7 +208,7 @@ fn light_to_intensity(adc: u16) -> u8 {
 }
 
 //
-// Embassy rgb led animation
+// Embassy RGB led animation
 //
 #[embassy_executor::task]
 async fn breath_task() {
@@ -264,7 +301,7 @@ where
     // Get current light value from sensor
     fn current_light(&mut self) -> u16 {
         match nb::block!(self.adc1.read_oneshot(&mut self.light_sensor_pin)) {
-            Ok(val) => val,
+            Ok(val) => light_to_percent(val),
             Err(_) => 0,
         }
     }
@@ -276,6 +313,12 @@ where
             Err(_) => 0,
         }
     }
+}
+
+fn light_to_percent(value: u16) -> u16 {
+    // let full_light = 4095;
+    // let value = (value * 100) / full_light;
+    value
 }
 
 fn moistorure_to_percent(value: u16) -> u8 {
