@@ -35,7 +35,9 @@ use log::info;
 use trouble_host::prelude::*;
 
 use crate::channel::CHANGE_LED_COLOR;
+use crate::channel::WIFI_READY;
 use crate::firmware::DuckFirmware;
+use crate::helpers::WifiState;
 use crate::rgb_led::RgbLed;
 use crate::rgb_led::breath;
 use crate::rgb_led::set_rgb_led_offline;
@@ -163,6 +165,20 @@ async fn web_server(stack: embassy_net::Stack<'static>) {
     loop {
         let mut rx_buffer = [0; 4096];
         let mut tx_buffer = [0; 4096];
+
+        loop {
+            match WIFI_READY.wait().await {
+                wifi_state => match wifi_state {
+                    WifiState::Connected => {
+                        break;
+                    }
+                    WifiState::NoConnected => {
+                        Timer::after(Duration::from_secs(2)).await;
+                        continue;
+                    }
+                },
+            }
+        }
 
         let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
 

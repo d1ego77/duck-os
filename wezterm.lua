@@ -79,24 +79,6 @@ config.keys = {
     key = 't',
     mods = 'CTRL',
     action = act.EmitEvent 'spawn-tab-same-workspace',
-    -- action = act.SpawnTab 'CurrentPaneDomain'
-    -- action = wezterm.action_callback(function(window, pane)
-
-    --     local cwd_uri = pane:get_current_working_dir()
-    --     local cwd = nil
-
-    --     if cwd_uri then
-    --       cwd = cwd_uri.file_path
-    --     end
-
-    --     wezterm.log_info("cwd path: ", cwd)
-    --     window:perform_action(
-    --       act.SpawnCommandInNewTab {
-    --         cwd = cwd,
-    --       },
-    --       pane
-    --     )
-    --   end),
     },
   {
     key = '[',
