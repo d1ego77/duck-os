@@ -112,7 +112,7 @@ impl<'b> DuckNet<'b> {
         (wifi, connection, ducknet)
     }
     pub fn get_stack(&self) -> Stack<'b> {
-        self.stack.clone()
+        self.stack
     }
     pub async fn wait_for_network_link_up(&self) {
         loop {
