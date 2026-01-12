@@ -2,111 +2,149 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="UTF-8" />
-  <title>Duck Sensors Dashboard</title>
+<meta charset="UTF-8">
+<title>Duck Sensors – Lab Mode</title>
 
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<!-- Chart.js -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom"></script>
 
-  <style>
-    body {
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-      background: #f8fafc;
-      color: #0f172a;
-      margin: 0;
-      padding: 24px;
-    }
+<style>
+  body {
+    font-family: system-ui, sans-serif;
+    background: #f8fafc;
+    color: #0f172a;
+    margin: 0;
+    padding: 24px;
+  }
 
-    h1 {
-      text-align: center;
-      margin-bottom: 4px;
-    }
+  h1 {
+    text-align: center;
+    margin-bottom: 4px;
+  }
 
-    .version {
-      text-align: center;
-      color: #64748b;
-      margin-bottom: 32px;
-    }
+  .version {
+    text-align: center;
+    color: #64748b;
+    margin-bottom: 28px;
+  }
 
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-      gap: 24px;
-    }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+    gap: 24px;
+  }
 
-    .card {
-      background: white;
-      padding: 16px;
-      border-radius: 14px;
-      box-shadow: 0 10px 20px rgba(15,23,42,0.08);
-    }
+  .card {
+    background: white;
+    padding: 16px;
+    border-radius: 14px;
+    box-shadow: 0 10px 20px rgba(15,23,42,0.08);
+  }
 
-    canvas {
-      width: 100%;
-      height: 260px;
-    }
-  </style>
+  canvas {
+    width: 100%;
+    height: 260px;
+  }
+</style>
 </head>
 
 <body>
-  <h1>🐤 Duck Sensor Dashboard</h1>
-  <div class="version" id="version">Version: --</div>
+<h1>🔬 Duck Sensors – Lab Mode</h1>
+<div class="version" id="version">Version: --</div>
 
-  <div class="grid">
-    <div class="card"><canvas id="lightChart"></canvas></div>
-    <div class="card"><canvas id="moistureChart"></canvas></div>
-    <div class="card"><canvas id="tempChart"></canvas></div>
-    <div class="card"><canvas id="humidityChart"></canvas></div>
-    <div class="card"><canvas id="pressureChart"></canvas></div>
-  </div>
+<div class="grid">
+  <div class="card"><canvas id="lightChart"></canvas></div>
+  <div class="card"><canvas id="moistureChart"></canvas></div>
+  <div class="card"><canvas id="tempChart"></canvas></div>
+  <div class="card"><canvas id="humidityChart"></canvas></div>
+  <div class="card"><canvas id="pressureChart"></canvas></div>
+  <div class="card"><canvas id="altitudeChart"></canvas></div>
+</div>
 
 <script>
+const ENDPOINT = "http://192.168.100.23:8080";
+const MAX_POINTS = 120;
 
-const ENDPOINT = "http://192.168.100.23:8080/light";
-const MAX_POINTS = 40;
-
-/* ---------- Suavizado ---------- */
-function smooth(value, step) {
-  return Math.round(value / step) * step;
+/* ---------- Utils ---------- */
+function smooth(v, step) {
+  return Math.round(v / step) * step;
 }
 
-/* ---------- Factory ---------- */
-function createChart(ctx, label, unit, min, max, step) {
+function movingAverage(data, w = 5) {
+  return data.map((_, i, a) => {
+    const s = Math.max(0, i - w + 1);
+    const slice = a.slice(s, i + 1);
+    return slice.reduce((x,y)=>x+y,0) / slice.length;
+  });
+}
+
+function autoScale(chart, value, range) {
+  chart.options.scales.y.min = value - range;
+  chart.options.scales.y.max = value + range;
+}
+
+/* ---------- Chart factory ---------- */
+function createChart(ctx, label, unit, step) {
   return new Chart(ctx, {
     type: 'line',
     data: {
       labels: [],
-      datasets: [{
-        label,
-        data: [],
-        borderWidth: 2,
-        tension: 0.35,
-        pointRadius: 0
-      }]
+      datasets: [
+        {
+          label,
+          data: [],
+          borderWidth: 1.5,
+          tension: 0.15,
+          pointRadius: 0
+        },
+        {
+          label: label + " (avg)",
+          data: [],
+          borderDash: [6,4],
+          borderWidth: 2,
+          tension: 0.3,
+          pointRadius: 0
+        }
+      ]
     },
     options: {
       responsive: true,
       animation: false,
       plugins: {
-        legend: { display: true }
+        tooltip: {
+          mode: 'index',
+          intersect: false,
+          callbacks: {
+            label: ctx =>
+              `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(2)}${unit}`
+          }
+        },
+        zoom: {
+          pan: { enabled: true, mode: 'x' },
+          zoom: {
+            wheel: { enabled: true },
+            pinch: { enabled: true },
+            mode: 'x'
+          }
+        }
       },
       scales: {
         x: {
+          ticks: { display: false },
           grid: {
             color: "#e5e7eb",
-            borderDash: [4,4]
-          },
-          ticks: { display: false }
+            borderDash: [2,2]
+          }
         },
         y: {
-          min,
-          max,
           ticks: {
             stepSize: step,
-            callback: v => v + unit
+            callback: v => v.toFixed(2) + unit
           },
           grid: {
             color: "#e5e7eb",
-            borderDash: [4,4]
+            borderDash: [2,2]
           }
         }
       }
@@ -116,74 +154,56 @@ function createChart(ctx, label, unit, min, max, step) {
 
 /* ---------- Charts ---------- */
 const charts = {
-  light: createChart(
-    lightChart,
-    "Luz (%)",
-    "%",
-    0, 100, 10
-  ),
-  moisture: createChart(
-    moistureChart,
-    "Humedad Suelo (%)",
-    "%",
-    0, 100, 10
-  ),
-  temperature: createChart(
-    tempChart,
-    "Temperatura (°C)",
-    "°C",
-    0, 50, 5
-  ),
-  humidity: createChart(
-    humidityChart,
-    "Humedad Ambiente (%)",
-    "%",
-    0, 100, 10
-  ),
-  pressure: createChart(
-    pressureChart,
-    "Presión (hPa)",
-    " hPa",
-    700, 1050, 10
-  )
+  light: createChart(lightChart, "Luz", "%", 1),
+  moisture: createChart(moistureChart, "Humedad Suelo", "%", 1),
+  temperature: createChart(tempChart, "Temperatura", "°C", 0.1),
+  humidity: createChart(humidityChart, "Humedad Aire", "%", 0.5),
+  pressure: createChart(pressureChart, "Presión", " hPa", 0.2),
+  altitude: createChart(altitudeChart, "Altitud", " m", 0.2)
 };
 
-/* ---------- Data handling ---------- */
-function push(chart, value) {
-  const d = chart.data.datasets[0].data;
-  const l = chart.data.labels;
+/* ---------- Push ---------- */
+function pushLab(chart, value, range) {
+  const raw = chart.data.datasets[0].data;
+  const avg = chart.data.datasets[1].data;
+  const labels = chart.data.labels;
 
-  if (d.length >= MAX_POINTS) {
-    d.shift();
-    l.shift();
+  if (raw.length >= MAX_POINTS) {
+    raw.shift();
+    avg.shift();
+    labels.shift();
   }
 
-  d.push(value);
-  l.push(new Date().toLocaleTimeString());
+  raw.push(value);
+  avg.splice(0, avg.length, ...movingAverage(raw, 5));
+  labels.push(new Date().toLocaleTimeString());
+
+  autoScale(chart, value, range);
   chart.update();
 }
 
+/* ---------- Fetch ---------- */
 async function fetchData() {
   try {
-    const res = await fetch(ENDPOINT);
-    const data = await res.json();
+    const r = await fetch(ENDPOINT);
+    const d = await r.json();
 
     document.getElementById("version").innerText =
-      `Version: ${data.version}`;
+      `Version: ${d.version}`;
 
-    push(charts.light, smooth(data.light, 5));
-    push(charts.moisture, smooth(data.moisture, 5));
-    push(charts.temperature, smooth(data.temperature, 0.5));
-    push(charts.humidity, smooth(data.humidity, 2));
-    push(charts.pressure, smooth(data.pressure, 1));
+    pushLab(charts.light, smooth(d.light, 1), 10);
+    pushLab(charts.moisture, smooth(d.moisture, 1), 10);
+    pushLab(charts.temperature, smooth(d.temperature, 0.1), 1.5);
+    pushLab(charts.humidity, smooth(d.humidity, 0.5), 5);
+    pushLab(charts.pressure, smooth(d.pressure, 0.2), 4);
+    pushLab(charts.altitude, smooth(d.altitude, 0.2), 5);
 
   } catch (e) {
     console.error("Fetch error", e);
   }
 }
 
-/* ---------- Polling ---------- */
-setInterval(fetchData, 7000);
+setInterval(fetchData, 2000);
 fetchData();
 </script>
 

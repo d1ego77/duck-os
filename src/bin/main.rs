@@ -53,6 +53,7 @@ use heapless::{String as HString, format};
 
 use bme280::i2c::BME280;
 use esp_hal::i2c::master::{Config, I2c};
+use libm::logf;
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
@@ -61,10 +62,10 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 
 extern crate alloc;
 
-const CURRENT_VERSION: &str = "1.0.82";
+const CURRENT_VERSION: &str = "1.0.89";
 const FIRMWARE_FILE_NAME: &str = "duck-firmware.bin";
 const VERSION_FILE_NAME: &str = "version.json";
-const FIRMWARE_HOST: &str = "http://192.168.100.56:80";
+const FIRMWARE_HOST: &str = "http://192.168.100.185:80";
 const WIFI_NAME: &str = "Diego";
 const WIFI_PASSWORD: &str = "Diego777";
 const CONNECTIONS_MAX: usize = 1;
@@ -89,6 +90,7 @@ async fn main(spawner: Spawner) -> ! {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     let sw_interrupt =
         esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
+
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
     info!("Embassy initialized!");
@@ -190,6 +192,7 @@ async fn web_server_task(
         info!("Esperando conexiones ");
         socket.accept(WEB_SERVER_PORT).await.unwrap();
         socket.set_timeout(Some(embassy_time::Duration::from_secs(10)));
+
         info!("Conexion recibida ");
         let mut buf = [0; 1024];
         loop {
@@ -207,7 +210,7 @@ async fn web_server_task(
 
             let payload = core::str::from_utf8(&buf[..n]).unwrap();
 
-            let (temperature, humidity, pressure) = i2c_sensor_manager.current_values();
+            let (temperature, humidity, pressure, altitude) = i2c_sensor_manager.current_values();
             let light = sensor_manager.current_light();
             let moisture = sensor_manager.current_moisture();
 
@@ -218,6 +221,7 @@ async fn web_server_task(
                 \"temperature\": {:.2},\
                 \"humidity\": {:.2},\
                 \"pressure\": {:.2},\
+                \"altitude\": {:.2},\
                 \"version\": \"{}\"\
                 }}",
                 light,
@@ -225,6 +229,7 @@ async fn web_server_task(
                 temperature,
                 humidity,
                 pressure,
+                altitude,
                 get_current_version()
             )
             .unwrap();
@@ -258,6 +263,7 @@ fn cors_headers() -> &'static str {
     // Puedes ajustar los valores si quieres restringir orígenes o métodos
     "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\n"
 }
+
 ///
 /// Transform a light value to a rgb intensity.
 ///
@@ -348,7 +354,7 @@ impl<'a> I2cSensor<'a> {
 
         Self { delay, bme280 }
     }
-    fn current_values(&mut self) -> (f32, f32, f32) {
+    fn current_values(&mut self) -> (f32, f32, f32, f32) {
         let (temperature, humidity, pressure) = match self.bme280.init(&mut self.delay) {
             Ok(_) => {
                 let data = match self.bme280.measure(&mut self.delay) {
@@ -365,7 +371,12 @@ impl<'a> I2cSensor<'a> {
             }
             Err(_) => (0.0, 0.0, 0.0),
         };
-        (temperature, humidity, pressure / 100.0)
+        (
+            temperature,
+            humidity,
+            pressure / 100.0,
+            calculate_altitude(pressure, temperature, 101200.0),
+        )
     }
 }
 
@@ -403,7 +414,7 @@ where
     }
 
     // Get current light value from sensor
-    fn current_light(&mut self) -> u16 {
+    fn current_light(&mut self) -> u8 {
         match nb::block!(self.adc1.read_oneshot(&mut self.light_sensor_pin)) {
             Ok(val) => light_to_percent(val),
             Err(_) => 0,
@@ -419,12 +430,11 @@ where
     }
 }
 
-fn light_to_percent(value: u16) -> u16 {
-    info!("Light: {}", value);
-    const MIN_LIGHT: u16 = 2100;
-    const MAX_LIGHT: u16 = 3000;
-    let percent = ((value - MIN_LIGHT) * 100) / MAX_LIGHT;
-    percent
+fn light_to_percent(value: u16) -> u8 {
+    const MIN_LIGHT: f32 = 2100.0;
+    const MAX_LIGHT: f32 = 2700.0 - MIN_LIGHT;
+    let percent = (value as f32 - MIN_LIGHT) * 100.0 / MAX_LIGHT;
+    percent.clamp(0.0, 100.0) as u8
 }
 
 fn moistorure_to_percent(value: u16) -> u8 {
@@ -440,4 +450,23 @@ fn moistorure_to_percent(value: u16) -> u8 {
     } else {
         (((dry - v) * 100) / (dry - wet_end)).clamp(0, 100) as u8
     }
+}
+
+/// Calcula la altitud en metros usando presión y temperatura
+///
+/// pressure_pa: presión medida en Pascales
+/// temperature_c: temperatura en °C
+/// p0_pa: presión de referencia al nivel del suelo (Pa)
+///
+/// Retorna: altitud en metros
+pub fn calculate_altitude(pressure_pa: f32, temperature_c: f32, p0_pa: f32) -> f32 {
+    // Constantes físicas
+    const R: f32 = 287.05; // J/(kg·K)
+    const G: f32 = 9.80665; // m/s²
+
+    // Convertir temperatura a Kelvin
+    let temperature_k = temperature_c + 273.15;
+
+    // Ecuación hipsométrica
+    (R * temperature_k / G) * logf(p0_pa / pressure_pa)
 }

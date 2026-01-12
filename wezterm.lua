@@ -26,6 +26,7 @@ config.color_scheme = 'Bamboo'
 -- config.color_scheme = 'Vaughn'
 -- config.color_scheme = 'Jellybeans'
  -- config.color_scheme = 'lovelace'
+config.color_scheme = 'Hopscotch (base16)'
  config.color_scheme = 'Silk Dark (base16)'
 ) config.color_scheme = 'duskfox'
 --config.font_size = 11.5
