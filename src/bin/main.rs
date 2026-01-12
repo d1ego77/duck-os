@@ -23,12 +23,17 @@ use esp_hal::analog::adc::Adc;
 use esp_hal::analog::adc::AdcChannel;
 use esp_hal::analog::adc::AdcPin;
 use esp_hal::clock::CpuClock;
+use esp_hal::delay::Delay;
 use esp_hal::gpio::AnalogPin;
 use esp_hal::gpio::interconnect::PeripheralInput;
 use esp_hal::peripherals::ADC1;
 use esp_hal::peripherals::GPIO2;
+use esp_hal::peripherals::GPIO4;
+use esp_hal::peripherals::GPIO5;
 use esp_hal::peripherals::GPIO6;
 use esp_hal::peripherals::GPIO8;
+use esp_hal::peripherals::I2C0;
+use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
 use esp_radio::ble::controller::BleConnector;
 use esp_radio::wifi::WifiDevice;
@@ -56,10 +61,10 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 
 extern crate alloc;
 
-const CURRENT_VERSION: &str = "1.0.78";
+const CURRENT_VERSION: &str = "1.0.82";
 const FIRMWARE_FILE_NAME: &str = "duck-firmware.bin";
 const VERSION_FILE_NAME: &str = "version.json";
-const FIRMWARE_HOST: &str = "http://192.168.100.185:80";
+const FIRMWARE_HOST: &str = "http://192.168.100.56:80";
 const WIFI_NAME: &str = "Diego";
 const WIFI_PASSWORD: &str = "Diego777";
 const CONNECTIONS_MAX: usize = 1;
@@ -76,8 +81,6 @@ async fn main(spawner: Spawner) -> ! {
     esp_println::logger::init_logger_from_env();
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
-
-    // let mut bme = bme280::new_primary(i2c);
 
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 65536);
     // COEX needs more RAM - so we've added some more
@@ -124,8 +127,15 @@ async fn main(spawner: Spawner) -> ! {
     network_stack.wait_for_network_link_up().await;
     // Before to continue wait for a network IP
     network_stack.wait_for_network_ip().await;
+
+    // Init sensor manager and i2c sensor
     let sensor = Sensor::new(peripherals.GPIO6, peripherals.GPIO2, peripherals.ADC1);
-    spawner.spawn(web_server(stack, sensor)).ok();
+    let i2c_sensor = I2cSensor::new(peripherals.I2C0, peripherals.GPIO4, peripherals.GPIO5);
+
+    // Webserver use sensor managers to get values by http
+    spawner
+        .spawn(web_server_task(stack, sensor, i2c_sensor))
+        .ok();
 
     let flash = FlashStorage::new(peripherals.FLASH);
     let input_config = esp_hal::gpio::InputConfig::default().with_pull(esp_hal::gpio::Pull::Up);
@@ -139,33 +149,9 @@ async fn main(spawner: Spawner) -> ! {
         VERSION_FILE_NAME,
     );
     spawner.spawn(firmware_update_task(duck_firmware)).ok();
-    // let sensor = Sensor::new(peripherals.GPIO6, peripherals.GPIO2, peripherals.ADC1);
-    // spawner.spawn(sensor_manager_task(sensor)).ok();
-    spawner.spawn(breath_task()).ok();
-    // loop {
-    //     info!("Running...");
-    //     Timer::after(Duration::from_secs(10)).await;
-    // }
-    let i2c = I2c::new(peripherals.I2C0, Config::default())
-        .unwrap()
-        .with_sda(peripherals.GPIO5)
-        .with_scl(peripherals.GPIO4);
-
-    let mut bme280 = BME280::new_primary(i2c);
-
-    let mut delay = esp_hal::delay::Delay::new();
-
-    info!("Murio!");
-    bme280.init(&mut delay).unwrap();
 
     loop {
-        info!("Entro!");
-        let data = bme280.measure(&mut delay).unwrap();
-        let t = data.temperature;
-        let h = data.humidity;
-        let p = data.pressure;
-        info!("t: {}, h: {}, p: {}", t, h, p);
-        delay.delay_millis(2000u32);
+        Timer::after(Duration::from_secs(10)).await;
     }
 }
 
@@ -189,11 +175,11 @@ async fn sensor_manager_task(mut sensor_manager: Sensor<'static, GPIO6<'static>,
 }
 
 #[embassy_executor::task]
-async fn web_server(
+async fn web_server_task(
     stack: embassy_net::Stack<'static>,
     mut sensor_manager: Sensor<'static, GPIO6<'static>, GPIO2<'static>>,
+    mut i2c_sensor_manager: I2cSensor<'static>,
 ) {
-    info!("Entro a webserver");
     loop {
         Timer::after(Duration::from_millis(20)).await;
         let mut rx_buffer = [0; 4096];
@@ -219,24 +205,31 @@ async fn web_server(
                 }
             };
 
-            // let data = &buf[..n];
-            let data = core::str::from_utf8(&buf[..n]).unwrap();
+            let payload = core::str::from_utf8(&buf[..n]).unwrap();
 
-            // Saltar headers HTTP
-            let payload = data;
-
-            info!("Received {} bytes", payload);
-
+            let (temperature, humidity, pressure) = i2c_sensor_manager.current_values();
             let light = sensor_manager.current_light();
             let moisture = sensor_manager.current_moisture();
 
-            let sensor_info: HString<1024> = format!(
-                "<html><head></head><body><h1>Light: {}% - Moisture: {}%</h1></body></html>",
-                light, moisture
+            let sensor_json: HString<512> = format!(
+                "{{\
+                \"light\": {},\
+                \"moisture\": {},\
+                \"temperature\": {:.2},\
+                \"humidity\": {:.2},\
+                \"pressure\": {:.2},\
+                \"version\": \"{}\"\
+                }}",
+                light,
+                moisture,
+                temperature,
+                humidity,
+                pressure,
+                get_current_version()
             )
             .unwrap();
 
-            let response = http_response(200, "text/html; charset=utf-8", &sensor_info);
+            let response = http_response(200, "application/json; charset=utf-8", &sensor_json);
             socket.write(response.as_bytes()).await.ok();
             Timer::after(Duration::from_millis(30)).await;
             socket.close();
@@ -337,6 +330,45 @@ fn get_current_version() -> &'static str {
     CURRENT_VERSION
 }
 
+struct I2cSensor<'a> {
+    bme280: BME280<I2c<'a, Blocking>>,
+    delay: Delay,
+}
+
+impl<'a> I2cSensor<'a> {
+    fn new(i2c0: I2C0<'a>, gpio4: GPIO4<'a>, gpio5: GPIO5<'a>) -> Self {
+        let delay = esp_hal::delay::Delay::new();
+        let val: Rate = Rate::from_hz(50);
+        let i2c = I2c::new(i2c0, Config::default().with_frequency(val))
+            .unwrap()
+            .with_sda(gpio5)
+            .with_scl(gpio4);
+
+        let bme280 = BME280::new_primary(i2c);
+
+        Self { delay, bme280 }
+    }
+    fn current_values(&mut self) -> (f32, f32, f32) {
+        let (temperature, humidity, pressure) = match self.bme280.init(&mut self.delay) {
+            Ok(_) => {
+                let data = match self.bme280.measure(&mut self.delay) {
+                    Ok(data) => (data.temperature, data.humidity, data.pressure),
+                    Err(e) => {
+                        log::error!(
+                            "Fail to get temperature, humidity and pressure values: {:?}",
+                            e
+                        );
+                        (0.0, 0.0, 0.0)
+                    }
+                };
+                data
+            }
+            Err(_) => (0.0, 0.0, 0.0),
+        };
+        (temperature, humidity, pressure / 100.0)
+    }
+}
+
 //
 // Wrap sensors
 //    Light sensor
@@ -388,6 +420,7 @@ where
 }
 
 fn light_to_percent(value: u16) -> u16 {
+    info!("Light: {}", value);
     const MIN_LIGHT: u16 = 2100;
     const MAX_LIGHT: u16 = 3000;
     let percent = ((value - MIN_LIGHT) * 100) / MAX_LIGHT;
