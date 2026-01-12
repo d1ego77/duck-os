@@ -8,6 +8,7 @@ local config = wezterm.config_builder()
 config.default_prog = { 'powershell.exe', '-NoLogo' }
 -- This is where you actually apply your config choices.
 config.font =  wezterm.font('Berkeley Mono')
+
 -- config.font =  wezterm.font('Berkeley Mono', { weight = 'Regular' })
 -- config.font =  wezterm.font('Departure Mono')
 -- config.font = wezterm.font("Ioskeley Mono", {weight = "Regular"})
@@ -25,7 +26,8 @@ config.color_scheme = 'Bamboo'
 -- config.color_scheme = 'Vaughn'
 -- config.color_scheme = 'Jellybeans'
  -- config.color_scheme = 'lovelace'
- config.color_scheme = 'duskfox'
+ config.color_scheme = 'Silk Dark (base16)'
+) config.color_scheme = 'duskfox'
 --config.font_size = 11.5
 -- config.show_tabs_in_tab_bar = false
 config.enable_tab_bar = false
