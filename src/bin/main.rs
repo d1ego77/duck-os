@@ -45,6 +45,7 @@ use crate::channel::CHANGE_LED_COLOR;
 use crate::firmware::DuckFirmware;
 use crate::rgb_led::RgbLed;
 use crate::rgb_led::breath;
+use crate::rgb_led::set_rgb_led_light;
 use crate::rgb_led::set_rgb_led_offline;
 use crate::rgb_led::set_rgb_led_online;
 use crate::wifi::NetworkConnection;
@@ -62,7 +63,7 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 
 extern crate alloc;
 
-const CURRENT_VERSION: &str = "1.0.89";
+const CURRENT_VERSION: &str = "1.0.92";
 const FIRMWARE_FILE_NAME: &str = "duck-firmware.bin";
 const VERSION_FILE_NAME: &str = "version.json";
 const FIRMWARE_HOST: &str = "http://192.168.100.185:80";
@@ -121,23 +122,28 @@ async fn main(spawner: Spawner) -> ! {
     let (wifi, network, network_stack) =
         wifi::DuckNet::new(wifi_interface, wifi_controller, &WIFI_NAME, &WIFI_PASSWORD);
     let stack = network_stack.get_stack();
+
     // Connect ESP32 to the current wifi
     spawner.spawn(wifi_connection_task(wifi)).ok();
-    // Create a connection network
+
+    // Create connection network
     spawner.spawn(network_connection_task(network)).ok();
-    // Before to continue wait for the network link up
+
+    // Wait for the network link up
     network_stack.wait_for_network_link_up().await;
-    // Before to continue wait for a network IP
+
+    // Wait for a network IP
     network_stack.wait_for_network_ip().await;
 
     // Init sensor manager and i2c sensor
     let sensor = Sensor::new(peripherals.GPIO6, peripherals.GPIO2, peripherals.ADC1);
     let i2c_sensor = I2cSensor::new(peripherals.I2C0, peripherals.GPIO4, peripherals.GPIO5);
 
-    // Webserver use sensor managers to get values by http
+    // Webserver use sensors manager to get values by http request
     spawner
         .spawn(web_server_task(stack, sensor, i2c_sensor))
         .ok();
+    // spawner.spawn(sensor_manager_task(sensor)).ok();
 
     let flash = FlashStorage::new(peripherals.FLASH);
     let input_config = esp_hal::gpio::InputConfig::default().with_pull(esp_hal::gpio::Pull::Up);
@@ -164,15 +170,15 @@ async fn main(spawner: Spawner) -> ! {
 async fn sensor_manager_task(mut sensor_manager: Sensor<'static, GPIO6<'static>, GPIO2<'static>>) {
     loop {
         let light = sensor_manager.current_light();
-        let moisture = sensor_manager.current_moisture();
-        // let adc = light_to_intensity(light);
-
+        const MAX: u8 = 255;
+        let adc: u32 = MAX as u32 - ((light as u32 * MAX as u32) / 100);
+        let adc: u32 = adc * 30 / 255;
         info!("Light: {}%", light);
-        info!("Moisture: {}% ", moisture);
+        info!("Light: {}%", adc);
 
-        // set_rgb_led_light(adc).await;
+        set_rgb_led_light(adc as u8).await;
 
-        Timer::after(Duration::from_secs(10)).await;
+        Timer::after(Duration::from_millis(500)).await;
     }
 }
 
@@ -243,11 +249,6 @@ async fn web_server_task(
     }
 }
 
-fn get_request(buf: &[u8; 1024], request_size: usize) -> String {
-    let request = core::str::from_utf8(&buf[..request_size]).unwrap();
-    request.to_owned()
-}
-
 fn http_response(status: u16, content_type: &str, body: &str) -> HString<1024> {
     format!(
         "HTTP/1.1 {} OK\r\n{}Content-Type: {}\r\nContent-Length: {}\r\n\r\n{}",
@@ -262,6 +263,11 @@ fn http_response(status: u16, content_type: &str, body: &str) -> HString<1024> {
 fn cors_headers() -> &'static str {
     // Puedes ajustar los valores si quieres restringir orígenes o métodos
     "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\n"
+}
+
+fn get_request(buf: &[u8; 1024], request_size: usize) -> String {
+    let request = core::str::from_utf8(&buf[..request_size]).unwrap();
+    request.to_owned()
 }
 
 ///
