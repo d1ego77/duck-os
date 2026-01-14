@@ -1,4 +1,14 @@
 
+format = '$all'
+# Wait 10 milliseconds for starship to check files under the current directory.
+scan_timeout = 20
+
+
+
+# Replace the '❯' symbol in the prompt with '➜'
+[character] # The name of the module we are configuring is 'character'
+success_symbol = '[➤](bold green)' # The 'success_symbol' segment is being set to '➜' with the color 'bold green'
+
 -- Pull in the wezterm API
 local wezterm = require 'wezterm'
 
