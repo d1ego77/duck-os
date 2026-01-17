@@ -63,10 +63,10 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 
 extern crate alloc;
 
-const CURRENT_VERSION: &str = "1.0.92";
+const CURRENT_VERSION: &str = "1.0.94";
 const FIRMWARE_FILE_NAME: &str = "duck-firmware.bin";
 const VERSION_FILE_NAME: &str = "version.json";
-const FIRMWARE_HOST: &str = "http://192.168.100.185:80";
+const FIRMWARE_HOST: &str = "http://192.168.100.56:80";
 const WIFI_NAME: &str = "Diego";
 const WIFI_PASSWORD: &str = "Diego777";
 const CONNECTIONS_MAX: usize = 1;
@@ -182,6 +182,9 @@ async fn sensor_manager_task(mut sensor_manager: Sensor<'static, GPIO6<'static>,
     }
 }
 
+///
+/// Web server
+///
 #[embassy_executor::task]
 async fn web_server_task(
     stack: embassy_net::Stack<'static>,
@@ -268,20 +271,6 @@ fn cors_headers() -> &'static str {
 fn get_request(buf: &[u8; 1024], request_size: usize) -> String {
     let request = core::str::from_utf8(&buf[..request_size]).unwrap();
     request.to_owned()
-}
-
-///
-/// Transform a light value to a rgb intensity.
-///
-fn light_to_intensity(adc: u16) -> u8 {
-    let value = if adc <= 2200 {
-        40
-    } else if adc > 2300 && adc < 3000 {
-        10
-    } else {
-        0
-    };
-    value
 }
 
 //
