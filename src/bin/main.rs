@@ -6,17 +6,15 @@
     holding buffers for the duration of a data transfer."
 )]
 mod channel;
+mod duck_http_server;
 mod firmware;
 mod helpers;
 mod ota;
 mod rgb_led;
 mod wifi;
 
-use alloc::borrow::ToOwned;
-use alloc::string::String;
 use bt_hci::controller::ExternalController;
 use embassy_executor::Spawner;
-use embassy_net::tcp::TcpSocket;
 use embassy_time::{Duration, Timer};
 use esp_hal::Blocking;
 use esp_hal::analog::adc::Adc;
@@ -50,7 +48,6 @@ use crate::rgb_led::set_rgb_led_offline;
 use crate::rgb_led::set_rgb_led_online;
 use crate::wifi::NetworkConnection;
 use crate::wifi::Wifi;
-use heapless::{String as HString, format};
 
 use bme280::i2c::BME280;
 use esp_hal::i2c::master::{Config, I2c};
@@ -63,7 +60,6 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 
 extern crate alloc;
 
-const CURRENT_VERSION: &str = "1.0.94";
 const FIRMWARE_FILE_NAME: &str = "duck-firmware.bin";
 const VERSION_FILE_NAME: &str = "version.json";
 const FIRMWARE_HOST: &str = "http://192.168.100.56:80";
@@ -71,7 +67,6 @@ const WIFI_NAME: &str = "Diego";
 const WIFI_PASSWORD: &str = "Diego777";
 const CONNECTIONS_MAX: usize = 1;
 const L2CAP_CHANNELS_MAX: usize = 1;
-const WEB_SERVER_PORT: u16 = 8080;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
@@ -95,7 +90,7 @@ async fn main(spawner: Spawner) -> ! {
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
 
     info!("Embassy initialized!");
-    info!("Current Version: {}", get_current_version());
+    info!("Current Version: {}", helpers::get_current_version());
 
     let radio_init = &*wifi::mk_static!(
         esp_radio::Controller<'static>,
@@ -141,10 +136,10 @@ async fn main(spawner: Spawner) -> ! {
 
     // Webserver use sensors manager to get values by http request
     spawner
-        .spawn(web_server_task(stack, sensor, i2c_sensor))
+        .spawn(duck_http_server::web_server_task(stack, sensor, i2c_sensor))
         .ok();
-    // spawner.spawn(sensor_manager_task(sensor)).ok();
 
+    // spawner.spawn(sensor_manager_task(sensor)).ok();
     let flash = FlashStorage::new(peripherals.FLASH);
     let input_config = esp_hal::gpio::InputConfig::default().with_pull(esp_hal::gpio::Pull::Up);
     let boot_button = esp_hal::gpio::Input::new(peripherals.GPIO9, input_config);
@@ -180,97 +175,6 @@ async fn sensor_manager_task(mut sensor_manager: Sensor<'static, GPIO6<'static>,
 
         Timer::after(Duration::from_millis(500)).await;
     }
-}
-
-///
-/// Web server
-///
-#[embassy_executor::task]
-async fn web_server_task(
-    stack: embassy_net::Stack<'static>,
-    mut sensor_manager: Sensor<'static, GPIO6<'static>, GPIO2<'static>>,
-    mut i2c_sensor_manager: I2cSensor<'static>,
-) {
-    loop {
-        Timer::after(Duration::from_millis(20)).await;
-        let mut rx_buffer = [0; 4096];
-        let mut tx_buffer = [0; 4096];
-
-        let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
-
-        info!("Esperando conexiones ");
-        socket.accept(WEB_SERVER_PORT).await.unwrap();
-        socket.set_timeout(Some(embassy_time::Duration::from_secs(10)));
-
-        info!("Conexion recibida ");
-        let mut buf = [0; 1024];
-        loop {
-            let n = match socket.read(&mut buf).await {
-                Ok(0) => {
-                    info!("read EOF");
-                    break;
-                }
-                Ok(n) => n,
-                Err(e) => {
-                    info!("read error: {:?}", e);
-                    break;
-                }
-            };
-
-            let payload = core::str::from_utf8(&buf[..n]).unwrap();
-
-            let (temperature, humidity, pressure, altitude) = i2c_sensor_manager.current_values();
-            let light = sensor_manager.current_light();
-            let moisture = sensor_manager.current_moisture();
-
-            let sensor_json: HString<512> = format!(
-                "{{\
-                \"light\": {},\
-                \"moisture\": {},\
-                \"temperature\": {:.2},\
-                \"humidity\": {:.2},\
-                \"pressure\": {:.2},\
-                \"altitude\": {:.2},\
-                \"version\": \"{}\"\
-                }}",
-                light,
-                moisture,
-                temperature,
-                humidity,
-                pressure,
-                altitude,
-                get_current_version()
-            )
-            .unwrap();
-
-            let response = http_response(200, "application/json; charset=utf-8", &sensor_json);
-            socket.write(response.as_bytes()).await.ok();
-            Timer::after(Duration::from_millis(30)).await;
-            socket.close();
-            break;
-        }
-    }
-}
-
-fn http_response(status: u16, content_type: &str, body: &str) -> HString<1024> {
-    format!(
-        "HTTP/1.1 {} OK\r\n{}Content-Type: {}\r\nContent-Length: {}\r\n\r\n{}",
-        status,
-        cors_headers(),
-        content_type,
-        body.len(),
-        body
-    )
-    .unwrap()
-}
-fn cors_headers() -> &'static str {
-    // Puedes ajustar los valores si quieres restringir orígenes o métodos
-    "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\n"
-}
-
-fn get_request(buf: &[u8; 1024], request_size: usize) -> String {
-    let request = core::str::from_utf8(&buf[..request_size]).unwrap();
-    request.to_owned()
 }
 
 //
@@ -322,13 +226,6 @@ async fn rgb_manager_task(led: RgbLed<'static, GPIO8<'static>>) {
         };
         adapter.set_color(color, level);
     }
-}
-
-//
-//Get current version of firmware
-//
-fn get_current_version() -> &'static str {
-    CURRENT_VERSION
 }
 
 struct I2cSensor<'a> {

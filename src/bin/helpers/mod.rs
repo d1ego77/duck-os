@@ -1,3 +1,13 @@
+pub const WEB_SERVER_PORT: u16 = 8080;
+pub const CURRENT_VERSION: &str = "1.0.94";
+
+//
+//Get current version of firmware
+//
+pub fn get_current_version() -> &'static str {
+    CURRENT_VERSION
+}
+
 // Preconfigured rgb led colors
 #[allow(dead_code)]
 pub enum RgbColor {
